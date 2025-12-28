@@ -1,0 +1,45 @@
+/**
+ * Schedule Execution Detail API
+ *
+ * GET /api/schedules/executions/[id] - Returns execution details including logs
+ * DELETE /api/schedules/executions/[id] - Delete a schedule execution
+ */
+
+import { json } from '@sveltejs/kit';
+import type { RequestHandler } from './$types';
+import { getScheduleExecution, deleteScheduleExecution } from '$lib/server/db';
+
+export const GET: RequestHandler = async ({ params }) => {
+	try {
+		const id = parseInt(params.id, 10);
+		if (isNaN(id)) {
+			return json({ error: 'Invalid execution ID' }, { status: 400 });
+		}
+
+		const execution = await getScheduleExecution(id);
+		if (!execution) {
+			return json({ error: 'Execution not found' }, { status: 404 });
+		}
+
+		return json(execution);
+	} catch (error: any) {
+		console.error('Failed to get schedule execution:', error);
+		return json({ error: error.message }, { status: 500 });
+	}
+};
+
+export const DELETE: RequestHandler = async ({ params }) => {
+	try {
+		const id = parseInt(params.id, 10);
+		if (isNaN(id)) {
+			return json({ error: 'Invalid execution ID' }, { status: 400 });
+		}
+
+		await deleteScheduleExecution(id);
+
+		return json({ success: true });
+	} catch (error: any) {
+		console.error('Failed to delete schedule execution:', error);
+		return json({ error: error.message }, { status: 500 });
+	}
+};

@@ -1,0 +1,105 @@
+[
+  {
+    "version": "1.0.4",
+    "date": "2025-12-28",
+    "changes": [
+      { "type": "feature", "text": "Theme system with new light/dark themes and font customization" },
+      { "type": "feature", "text": "Grid font size setting for data tables" },
+      { "type": "feature", "text": "Column visibility, reordering, and resizing (persisted per user or globally)" },
+      { "type": "feature", "text": "Auto-update containers with per-environment checks, batch updates, and vulnerability blocking" },
+      { "type": "feature", "text": "Stack improvements: environment variables management and .env file support for git stacks" },
+      { "type": "feature", "text": "Visual graph editor for Docker Compose stacks" },
+      { "type": "feature", "text": "Timezone support for scheduled tasks" },
+      { "type": "feature", "text": "Improved schedule execution history" },
+      { "type": "fix", "text": "Fix duplicate ports in expanded stack containers (IPv4/IPv6)" },
+      { "type": "fix", "text": "Fix registry seed crash when Docker Hub URL is modified" },
+      { "type": "fix", "text": "Fix null ports crash for Docker Desktop containers" },
+      { "type": "fix", "text": "Fix header layout overlap on small screens" },
+      { "type": "fix", "text": "Fix TLS/mTLS support for remote Docker hosts" },
+      { "type": "fix", "text": "Fix memory leaks (setTimeout cleanup, stream requests)" },
+      { "type": "fix", "text": "Fix Edge mode connection issues" },
+      { "type": "fix", "text": "Fix stack deletion with orphaned records" },
+      { "type": "fix", "text": "Fix container editing breaking Compose stack association" },
+      { "type": "fix", "text": "Many other minor bug fixes and improvements" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.4"
+  },
+  {
+    "version": "1.0.3",
+    "date": "2025-12-18",
+    "changes": [
+      { "type": "fix", "text": "Fix infinite toast loop when environment is offline" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.3"
+  },
+  {
+    "version": "1.0.2",
+    "date": "2025-12-17",
+    "changes": [
+      { "type": "fix", "text": "Fix stack git repository selection" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.2"
+  },
+  {
+    "version": "1.0.1",
+    "date": "2025-12-17",
+    "changes": [
+      { "type": "feature", "text": "Public IP field for environment config (container port clickable links)" },
+      { "type": "feature", "text": "Releases are now also published with 'latest' tag" },
+      { "type": "fix", "text": "Server-side auth enforcement fix" },
+      { "type": "fix", "text": "Docker production build dependencies fix" },
+      { "type": "fix", "text": "Memory metrics calculation for remote Docker hosts" },
+      { "type": "fix", "text": "Dashboard memory calculation (sum all containers memory usage)" },
+      { "type": "fix", "text": "Form validation errors and error messages readability in dark theme" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.1"
+  },
+  {
+    "version": "1.0.0",
+    "date": "2025-12-16",
+    "changes": [
+      { "type": "feature", "text": "First public release of Dockhand" },
+      { "type": "feature", "text": "Real-time container management (start, stop, restart, remove)" },
+      { "type": "feature", "text": "Container creation with advanced configuration (ports, volumes, env vars, labels)" },
+      { "type": "feature", "text": "Docker Compose stack management with visual editor" },
+      { "type": "feature", "text": "Git repository integration for stacks with webhooks and auto-sync" },
+      { "type": "feature", "text": "Image management and registry browsing" },
+      { "type": "feature", "text": "Vulnerability scanning with Grype and Trivy" },
+      { "type": "feature", "text": "Container logs viewer with ANSI color rendering and auto-refresh" },
+      { "type": "feature", "text": "Interactive shell terminal with xterm.js" },
+      { "type": "feature", "text": "File browser for containers and volumes" },
+      { "type": "feature", "text": "Multi-environment support (local and remote Docker hosts)" },
+      { "type": "feature", "text": "Hawser agent for remote Docker management (Standard and Edge modes)" },
+      { "type": "feature", "text": "Network and volume management" },
+      { "type": "feature", "text": "Dashboard with real-time metrics and activity tracking" },
+      { "type": "feature", "text": "Authentication with OIDC/SSO and local users" },
+      { "type": "feature", "text": "SQLite and PostgreSQL database support" },
+      { "type": "feature", "text": "Notification channels (SMTP, Apprise webhooks)" },
+      { "type": "feature", "text": "Container auto-update scheduling with vulnerability criteria" },
+      { "type": "feature", "text": "Enterprise edition with LDAP, MFA, and RBAC" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.0"
+  },
+  {
+    "version": "0.9.2",
+    "date": "2025-12-14",
+    "changes": [
+      { "type": "feature", "text": "Hawser agent support - manage remote Docker hosts behind NAT/firewall" },
+      { "type": "feature", "text": "Dashboard redesign with flexible tile sizes and real-time charts" },
+      { "type": "feature", "text": "Multi-architecture Docker images (amd64 + arm64)" },
+      { "type": "fix", "text": "Various bug fixes and performance improvements" }
+    ],
+    "imageTag": "fnsys/dockhand:v0.9.2"
+  },
+  {
+    "version": "0.9.1",
+    "date": "2025-12-10",
+    "changes": [
+      { "type": "feature", "text": "Git stack deployment with webhook triggers" },
+      { "type": "feature", "text": "Container auto-update scheduling" },
+      { "type": "fix", "text": "Fixed container logs not streaming on Edge environments" },
+      { "type": "fix", "text": "Fixed memory leak in metrics collection" }
+    ],
+    "imageTag": "fnsys/dockhand:v0.9.1"
+  }
+]

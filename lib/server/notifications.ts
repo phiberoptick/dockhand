@@ -1,0 +1,499 @@
+import nodemailer from 'nodemailer';
+import {
+	getEnabledNotificationSettings,
+	getEnabledEnvironmentNotifications,
+	getEnvironment,
+	type NotificationSettingData,
+	type SmtpConfig,
+	type AppriseConfig,
+	type NotificationEventType
+} from './db';
+
+export interface NotificationPayload {
+	title: string;
+	message: string;
+	type?: 'info' | 'success' | 'warning' | 'error';
+	environmentId?: number;
+	environmentName?: string;
+}
+
+// Send notification via SMTP
+async function sendSmtpNotification(config: SmtpConfig, payload: NotificationPayload): Promise<boolean> {
+	try {
+		const transporter = nodemailer.createTransport({
+			host: config.host,
+			port: config.port,
+			secure: config.secure,
+			auth: config.username ? {
+				user: config.username,
+				pass: config.password
+			} : undefined
+		});
+
+		const envBadge = payload.environmentName
+			? `<span style="display: inline-block; background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px; margin-left: 8px;">${payload.environmentName}</span>`
+			: '';
+		const envText = payload.environmentName ? ` [${payload.environmentName}]` : '';
+
+		const html = `
+			<div style="font-family: sans-serif; padding: 20px;">
+				<h2 style="margin: 0 0 10px 0;">${payload.title}${envBadge}</h2>
+				<p style="margin: 0; white-space: pre-wrap;">${payload.message}</p>
+				<hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+				<p style="margin: 0; font-size: 12px; color: #666;">Sent by Dockhand</p>
+			</div>
+		`;
+
+		await transporter.sendMail({
+			from: config.from_name ? `"${config.from_name}" <${config.from_email}>` : config.from_email,
+			to: config.to_emails.join(', '),
+			subject: `[Dockhand]${envText} ${payload.title}`,
+			text: `${payload.title}${envText}\n\n${payload.message}`,
+			html
+		});
+
+		return true;
+	} catch (error) {
+		console.error('[Notifications] SMTP send failed:', error);
+		return false;
+	}
+}
+
+// Parse Apprise URL and send notification
+async function sendAppriseNotification(config: AppriseConfig, payload: NotificationPayload): Promise<boolean> {
+	let success = true;
+
+	for (const url of config.urls) {
+		try {
+			const sent = await sendToAppriseUrl(url, payload);
+			if (!sent) success = false;
+		} catch (error) {
+			console.error(`[Notifications] Failed to send to ${url}:`, error);
+			success = false;
+		}
+	}
+
+	return success;
+}
+
+// Send to a single Apprise URL
+async function sendToAppriseUrl(url: string, payload: NotificationPayload): Promise<boolean> {
+	try {
+		// Extract protocol from Apprise URL format (protocol://...)
+		// Note: Can't use new URL() because custom schemes like 'tgram://' are not valid URLs
+		const protocolMatch = url.match(/^([a-z]+):\/\//i);
+		if (!protocolMatch) {
+			console.error('[Notifications] Invalid Apprise URL format - missing protocol:', url);
+			return false;
+		}
+		const protocol = protocolMatch[1].toLowerCase();
+
+		// Handle different notification services
+		switch (protocol) {
+			case 'discord':
+			case 'discords':
+				return await sendDiscord(url, payload);
+			case 'slack':
+			case 'slacks':
+				return await sendSlack(url, payload);
+			case 'tgram':
+				return await sendTelegram(url, payload);
+			case 'gotify':
+			case 'gotifys':
+				return await sendGotify(url, payload);
+			case 'ntfy':
+			case 'ntfys':
+				return await sendNtfy(url, payload);
+			case 'pushover':
+				return await sendPushover(url, payload);
+			case 'json':
+			case 'jsons':
+				return await sendGenericWebhook(url, payload);
+			default:
+				console.warn(`[Notifications] Unsupported Apprise protocol: ${protocol}`);
+				return false;
+		}
+	} catch (error) {
+		console.error('[Notifications] Failed to parse Apprise URL:', error);
+		return false;
+	}
+}
+
+// Discord webhook
+async function sendDiscord(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// discord://webhook_id/webhook_token or discords://...
+	const url = appriseUrl.replace(/^discords?:\/\//, 'https://discord.com/api/webhooks/');
+	const titleWithEnv = payload.environmentName ? `${payload.title} [${payload.environmentName}]` : payload.title;
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			embeds: [{
+				title: titleWithEnv,
+				description: payload.message,
+				color: payload.type === 'error' ? 0xff0000 : payload.type === 'warning' ? 0xffaa00 : payload.type === 'success' ? 0x00ff00 : 0x0099ff,
+				...(payload.environmentName && {
+					footer: { text: `Environment: ${payload.environmentName}` }
+				})
+			}]
+		})
+	});
+
+	return response.ok;
+}
+
+// Slack webhook
+async function sendSlack(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// slack://token_a/token_b/token_c or webhook URL
+	let url: string;
+	if (appriseUrl.includes('hooks.slack.com')) {
+		url = appriseUrl.replace(/^slacks?:\/\//, 'https://');
+	} else {
+		const parts = appriseUrl.replace(/^slacks?:\/\//, '').split('/');
+		url = `https://hooks.slack.com/services/${parts.join('/')}`;
+	}
+
+	const envTag = payload.environmentName ? ` \`${payload.environmentName}\`` : '';
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			text: `*${payload.title}*${envTag}\n${payload.message}`
+		})
+	});
+
+	return response.ok;
+}
+
+// Telegram
+async function sendTelegram(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// tgram://bot_token/chat_id
+	const match = appriseUrl.match(/^tgram:\/\/([^/]+)\/(.+)/);
+	if (!match) {
+		console.error('[Notifications] Invalid Telegram URL format. Expected: tgram://bot_token/chat_id');
+		return false;
+	}
+
+	const [, botToken, chatId] = match;
+	const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+	const envTag = payload.environmentName ? ` \\[${payload.environmentName}\\]` : '';
+	try {
+		const response = await fetch(url, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				chat_id: chatId,
+				text: `*${payload.title}*${envTag}\n${payload.message}`,
+				parse_mode: 'Markdown'
+			})
+		});
+
+		if (!response.ok) {
+			const errorData = await response.json().catch(() => ({}));
+			console.error('[Notifications] Telegram API error:', response.status, errorData);
+		}
+
+		return response.ok;
+	} catch (error) {
+		console.error('[Notifications] Telegram send failed:', error);
+		return false;
+	}
+}
+
+// Gotify
+async function sendGotify(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// gotify://hostname/token or gotifys://hostname/token
+	const match = appriseUrl.match(/^gotifys?:\/\/([^/]+)\/(.+)/);
+	if (!match) return false;
+
+	const [, hostname, token] = match;
+	const protocol = appriseUrl.startsWith('gotifys') ? 'https' : 'http';
+	const url = `${protocol}://${hostname}/message?token=${token}`;
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			title: payload.title,
+			message: payload.message,
+			priority: payload.type === 'error' ? 8 : payload.type === 'warning' ? 5 : 2
+		})
+	});
+
+	return response.ok;
+}
+
+// ntfy
+async function sendNtfy(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// ntfy://topic or ntfys://hostname/topic
+	let url: string;
+	const isSecure = appriseUrl.startsWith('ntfys');
+	const path = appriseUrl.replace(/^ntfys?:\/\//, '');
+
+	if (path.includes('/')) {
+		// Custom server
+		url = `${isSecure ? 'https' : 'http'}://${path}`;
+	} else {
+		// Default ntfy.sh
+		url = `https://ntfy.sh/${path}`;
+	}
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: {
+			'Title': payload.title,
+			'Priority': payload.type === 'error' ? '5' : payload.type === 'warning' ? '4' : '3',
+			'Tags': payload.type || 'info'
+		},
+		body: payload.message
+	});
+
+	return response.ok;
+}
+
+// Pushover
+async function sendPushover(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// pushover://user_key/api_token
+	const match = appriseUrl.match(/^pushover:\/\/([^/]+)\/(.+)/);
+	if (!match) return false;
+
+	const [, userKey, apiToken] = match;
+	const url = 'https://api.pushover.net/1/messages.json';
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			token: apiToken,
+			user: userKey,
+			title: payload.title,
+			message: payload.message,
+			priority: payload.type === 'error' ? 1 : 0
+		})
+	});
+
+	return response.ok;
+}
+
+// Generic JSON webhook
+async function sendGenericWebhook(appriseUrl: string, payload: NotificationPayload): Promise<boolean> {
+	// json://hostname/path or jsons://hostname/path
+	const url = appriseUrl.replace(/^jsons?:\/\//, appriseUrl.startsWith('jsons') ? 'https://' : 'http://');
+
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			title: payload.title,
+			message: payload.message,
+			type: payload.type || 'info',
+			timestamp: new Date().toISOString()
+		})
+	});
+
+	return response.ok;
+}
+
+// Send notification to all enabled channels
+export async function sendNotification(payload: NotificationPayload): Promise<{ success: boolean; results: { name: string; success: boolean }[] }> {
+	const settings = await getEnabledNotificationSettings();
+	const results: { name: string; success: boolean }[] = [];
+
+	for (const setting of settings) {
+		let success = false;
+
+		if (setting.type === 'smtp') {
+			success = await sendSmtpNotification(setting.config as SmtpConfig, payload);
+		} else if (setting.type === 'apprise') {
+			success = await sendAppriseNotification(setting.config as AppriseConfig, payload);
+		}
+
+		results.push({ name: setting.name, success });
+	}
+
+	return {
+		success: results.every(r => r.success),
+		results
+	};
+}
+
+// Test a specific notification setting
+export async function testNotification(setting: NotificationSettingData): Promise<boolean> {
+	const payload: NotificationPayload = {
+		title: 'Dockhand Test Notification',
+		message: 'This is a test notification from Dockhand. If you receive this, your notification settings are configured correctly.',
+		type: 'info'
+	};
+
+	if (setting.type === 'smtp') {
+		return await sendSmtpNotification(setting.config as SmtpConfig, payload);
+	} else if (setting.type === 'apprise') {
+		return await sendAppriseNotification(setting.config as AppriseConfig, payload);
+	}
+
+	return false;
+}
+
+// Map Docker action to notification event type
+function mapActionToEventType(action: string): NotificationEventType | null {
+	const mapping: Record<string, NotificationEventType> = {
+		'start': 'container_started',
+		'stop': 'container_stopped',
+		'restart': 'container_restarted',
+		'die': 'container_exited',
+		'kill': 'container_exited',
+		'oom': 'container_oom',
+		'health_status: unhealthy': 'container_unhealthy',
+		'pull': 'image_pulled'
+	};
+	return mapping[action] || null;
+}
+
+// Scanner image patterns to exclude from notifications
+const SCANNER_IMAGE_PATTERNS = [
+	'anchore/grype',
+	'aquasec/trivy',
+	'ghcr.io/anchore/grype',
+	'ghcr.io/aquasecurity/trivy'
+];
+
+function isScannerContainer(image: string | null | undefined): boolean {
+	if (!image) return false;
+	const lowerImage = image.toLowerCase();
+	return SCANNER_IMAGE_PATTERNS.some(pattern => lowerImage.includes(pattern.toLowerCase()));
+}
+
+// Send notification for an environment-specific event
+export async function sendEnvironmentNotification(
+	environmentId: number,
+	action: string,
+	payload: Omit<NotificationPayload, 'environmentId' | 'environmentName'>,
+	image?: string | null
+): Promise<{ success: boolean; sent: number }> {
+	const eventType = mapActionToEventType(action);
+	if (!eventType) {
+		// Not a notifiable event type
+		return { success: true, sent: 0 };
+	}
+
+	// Get environment name
+	const env = await getEnvironment(environmentId);
+	if (!env) {
+		return { success: false, sent: 0 };
+	}
+
+	// Get enabled notification channels for this environment and event type
+	const envNotifications = await getEnabledEnvironmentNotifications(environmentId, eventType);
+	if (envNotifications.length === 0) {
+		return { success: true, sent: 0 };
+	}
+
+	const enrichedPayload: NotificationPayload = {
+		...payload,
+		environmentId,
+		environmentName: env.name
+	};
+
+	// Check if this is a scanner container
+	const isScanner = isScannerContainer(image);
+
+	let sent = 0;
+	let allSuccess = true;
+
+	// Skip all notifications for scanner containers (Trivy, Grype)
+	if (isScanner) {
+		return { success: true, sent: 0 };
+	}
+
+	for (const notif of envNotifications) {
+		try {
+			let success = false;
+			if (notif.channelType === 'smtp') {
+				success = await sendSmtpNotification(notif.config as SmtpConfig, enrichedPayload);
+			} else if (notif.channelType === 'apprise') {
+				success = await sendAppriseNotification(notif.config as AppriseConfig, enrichedPayload);
+			}
+			if (success) sent++;
+			else allSuccess = false;
+		} catch (error) {
+			console.error(`[Notifications] Failed to send to channel ${notif.channelName}:`, error);
+			allSuccess = false;
+		}
+	}
+
+	return { success: allSuccess, sent };
+}
+
+// Send notification for a specific event type (not mapped from Docker action)
+// Used for auto-update, git sync, vulnerability, and system events
+export async function sendEventNotification(
+	eventType: NotificationEventType,
+	payload: NotificationPayload,
+	environmentId?: number
+): Promise<{ success: boolean; sent: number }> {
+	// Get environment name if provided
+	let enrichedPayload = { ...payload };
+	if (environmentId) {
+		const env = await getEnvironment(environmentId);
+		if (env) {
+			enrichedPayload.environmentId = environmentId;
+			enrichedPayload.environmentName = env.name;
+		}
+	}
+
+	// Get enabled notification channels for this event type
+	let channels: Array<{
+		channel_type: 'smtp' | 'apprise';
+		channel_name: string;
+		config: SmtpConfig | AppriseConfig;
+	}> = [];
+
+	if (environmentId) {
+		// Environment-specific: get channels subscribed to this env and event type
+		const envNotifications = await getEnabledEnvironmentNotifications(environmentId, eventType);
+		channels = envNotifications
+			.filter(n => n.channelType && n.channelName)
+			.map(n => ({
+				channel_type: n.channelType!,
+				channel_name: n.channelName!,
+				config: n.config
+			}));
+	} else {
+		// System-wide: get all globally enabled channels that subscribe to this event type
+		const globalSettings = await getEnabledNotificationSettings();
+		channels = globalSettings
+			.filter(s => s.eventTypes?.includes(eventType))
+			.map(s => ({
+				channel_type: s.type,
+				channel_name: s.name,
+				config: s.config
+			}));
+	}
+
+	if (channels.length === 0) {
+		return { success: true, sent: 0 };
+	}
+
+	let sent = 0;
+	let allSuccess = true;
+
+	for (const channel of channels) {
+		try {
+			let success = false;
+			if (channel.channel_type === 'smtp') {
+				success = await sendSmtpNotification(channel.config as SmtpConfig, enrichedPayload);
+			} else if (channel.channel_type === 'apprise') {
+				success = await sendAppriseNotification(channel.config as AppriseConfig, enrichedPayload);
+			}
+			if (success) sent++;
+			else allSuccess = false;
+		} catch (error) {
+			console.error(`[Notifications] Failed to send to channel ${channel.channel_name}:`, error);
+			allSuccess = false;
+		}
+	}
+
+	return { success: allSuccess, sent };
+}

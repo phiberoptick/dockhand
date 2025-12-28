@@ -1,0 +1,307 @@
+/**
+ * Audit Logging Helper
+ *
+ * Provides easy-to-use functions for logging audit events from API endpoints.
+ * This is an Enterprise-only feature.
+ */
+
+import type { RequestEvent } from '@sveltejs/kit';
+import { isEnterprise } from './license';
+import { logAuditEvent, type AuditAction, type AuditEntityType, type AuditLogCreateData } from './db';
+import { authorize } from './authorize';
+
+export interface AuditContext {
+	userId?: number | null;
+	username: string;
+	ipAddress?: string | null;
+	userAgent?: string | null;
+}
+
+/**
+ * Extract audit context from a request event
+ */
+export async function getAuditContext(event: RequestEvent): Promise<AuditContext> {
+	const auth = await authorize(event.cookies);
+
+	// Get IP address from various headers (proxied requests)
+	const forwardedFor = event.request.headers.get('x-forwarded-for');
+	const realIp = event.request.headers.get('x-real-ip');
+	let ipAddress = forwardedFor?.split(',')[0]?.trim() || realIp || event.getClientAddress?.() || null;
+
+	// Convert IPv6 loopback to more readable format
+	if (ipAddress === '::1' || ipAddress === '::ffff:127.0.0.1') {
+		ipAddress = '127.0.0.1';
+	} else if (ipAddress?.startsWith('::ffff:')) {
+		// Strip IPv6 prefix from IPv4-mapped addresses
+		ipAddress = ipAddress.substring(7);
+	}
+
+	// Get user agent
+	const userAgent = event.request.headers.get('user-agent') || null;
+
+	return {
+		userId: auth.user?.id ?? null,
+		username: auth.user?.username ?? 'anonymous',
+		ipAddress,
+		userAgent
+	};
+}
+
+/**
+ * Log an audit event (only logs if Enterprise license is active)
+ */
+export async function audit(
+	event: RequestEvent,
+	action: AuditAction,
+	entityType: AuditEntityType,
+	options: {
+		entityId?: string | null;
+		entityName?: string | null;
+		environmentId?: number | null;
+		description?: string | null;
+		details?: any | null;
+	} = {}
+): Promise<void> {
+	// Only log if enterprise
+	if (!(await isEnterprise())) return;
+
+	const ctx = await getAuditContext(event);
+
+	const data: AuditLogCreateData = {
+		userId: ctx.userId,
+		username: ctx.username,
+		action,
+		entityType: entityType,
+		entityId: options.entityId ?? null,
+		entityName: options.entityName ?? null,
+		environmentId: options.environmentId ?? null,
+		description: options.description ?? null,
+		details: options.details ?? null,
+		ipAddress: ctx.ipAddress ?? null,
+		userAgent: ctx.userAgent ?? null
+	};
+
+	try {
+		await logAuditEvent(data);
+	} catch (error) {
+		// Don't let audit logging errors break the main operation
+		console.error('Failed to log audit event:', error);
+	}
+}
+
+/**
+ * Helper for container actions
+ */
+export async function auditContainer(
+	event: RequestEvent,
+	action: AuditAction,
+	containerId: string,
+	containerName: string,
+	environmentId?: number | null,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'container', {
+		entityId: containerId,
+		entityName: containerName,
+		environmentId,
+		description: `Container ${containerName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for image actions
+ */
+export async function auditImage(
+	event: RequestEvent,
+	action: AuditAction,
+	imageId: string,
+	imageName: string,
+	environmentId?: number | null,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'image', {
+		entityId: imageId,
+		entityName: imageName,
+		environmentId,
+		description: `Image ${imageName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for stack actions
+ */
+export async function auditStack(
+	event: RequestEvent,
+	action: AuditAction,
+	stackName: string,
+	environmentId?: number | null,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'stack', {
+		entityId: stackName,
+		entityName: stackName,
+		environmentId,
+		description: `Stack ${stackName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for volume actions
+ */
+export async function auditVolume(
+	event: RequestEvent,
+	action: AuditAction,
+	volumeId: string,
+	volumeName: string,
+	environmentId?: number | null,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'volume', {
+		entityId: volumeId,
+		entityName: volumeName,
+		environmentId,
+		description: `Volume ${volumeName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for network actions
+ */
+export async function auditNetwork(
+	event: RequestEvent,
+	action: AuditAction,
+	networkId: string,
+	networkName: string,
+	environmentId?: number | null,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'network', {
+		entityId: networkId,
+		entityName: networkName,
+		environmentId,
+		description: `Network ${networkName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for user actions
+ */
+export async function auditUser(
+	event: RequestEvent,
+	action: AuditAction,
+	userId: number,
+	username: string,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'user', {
+		entityId: String(userId),
+		entityName: username,
+		description: `User ${username} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for settings actions
+ */
+export async function auditSettings(
+	event: RequestEvent,
+	action: AuditAction,
+	settingName: string,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'settings', {
+		entityId: settingName,
+		entityName: settingName,
+		description: `Settings ${settingName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for environment actions
+ */
+export async function auditEnvironment(
+	event: RequestEvent,
+	action: AuditAction,
+	environmentId: number,
+	environmentName: string,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'environment', {
+		entityId: String(environmentId),
+		entityName: environmentName,
+		environmentId,
+		description: `Environment ${environmentName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for registry actions
+ */
+export async function auditRegistry(
+	event: RequestEvent,
+	action: AuditAction,
+	registryId: number,
+	registryName: string,
+	details?: any
+): Promise<void> {
+	await audit(event, action, 'registry', {
+		entityId: String(registryId),
+		entityName: registryName,
+		description: `Registry ${registryName} ${action}`,
+		details
+	});
+}
+
+/**
+ * Helper for auth actions (login/logout)
+ */
+export async function auditAuth(
+	event: RequestEvent,
+	action: 'login' | 'logout',
+	username: string,
+	details?: any
+): Promise<void> {
+	// For login/logout, we want to log even without a session
+	if (!(await isEnterprise())) return;
+
+	const forwardedFor = event.request.headers.get('x-forwarded-for');
+	const realIp = event.request.headers.get('x-real-ip');
+	let ipAddress = forwardedFor?.split(',')[0]?.trim() || realIp || event.getClientAddress?.() || null;
+
+	// Convert IPv6 loopback to more readable format
+	if (ipAddress === '::1' || ipAddress === '::ffff:127.0.0.1') {
+		ipAddress = '127.0.0.1';
+	} else if (ipAddress?.startsWith('::ffff:')) {
+		ipAddress = ipAddress.substring(7);
+	}
+
+	const userAgent = event.request.headers.get('user-agent') || null;
+
+	const data: AuditLogCreateData = {
+		userId: null, // Will be set from details if available
+		username,
+		action,
+		entityType: 'user',
+		entityId: null,
+		entityName: username,
+		environmentId: null,
+		description: `User ${username} ${action}`,
+		details,
+		ipAddress: ipAddress,
+		userAgent: userAgent
+	};
+
+	try {
+		await logAuditEvent(data);
+	} catch (error) {
+		console.error('Failed to log audit event:', error);
+	}
+}
