@@ -152,6 +152,8 @@
 	// RAF throttling for performance
 	let resizeRAF: number | null = null;
 	let scrollRAF: number | null = null;
+	let visibleRangeRAF: number | null = null;
+	let loadMorePending = false;
 
 	// Helper to get base width for a column (without grow calculation)
 	function getBaseWidth(colId: string): number {
@@ -353,13 +355,24 @@
 	const visibleData = $derived(virtualScroll ? data.slice(startIndex, endIndex) : data);
 	const offsetY = $derived(virtualScroll ? startIndex * rowHeight : 0);
 
-	// Notify parent of visible range changes
+	// Notify parent of visible range changes (throttled via RAF)
 	$effect(() => {
 		if (virtualScroll && onVisibleRangeChange && data.length > 0) {
-			// Calculate actual visible range (without buffer)
-			const visibleStart = Math.max(1, Math.floor(scrollTop / rowHeight) + 1);
-			const visibleEnd = Math.min(data.length, Math.ceil((scrollTop + containerHeight) / rowHeight));
-			onVisibleRangeChange(visibleStart, Math.max(visibleEnd, visibleStart), data.length);
+			// Capture values for RAF callback
+			const st = scrollTop;
+			const ch = containerHeight;
+			const len = data.length;
+			const rh = rowHeight;
+			const cb = onVisibleRangeChange;
+
+			if (visibleRangeRAF) cancelAnimationFrame(visibleRangeRAF);
+			visibleRangeRAF = requestAnimationFrame(() => {
+				visibleRangeRAF = null;
+				// Calculate actual visible range (without buffer)
+				const visibleStart = Math.max(1, Math.floor(st / rh) + 1);
+				const visibleEnd = Math.min(len, Math.ceil((st + ch) / rh));
+				cb(visibleStart, Math.max(visibleEnd, visibleStart), len);
+			});
 		}
 	});
 
@@ -376,11 +389,14 @@
 			// Update container height on scroll (in case of resize)
 			containerHeight = target.clientHeight;
 
-			// Infinite scroll trigger
-			if (hasMore && onLoadMore) {
+			// Infinite scroll trigger (with guard to prevent repeated calls)
+			if (hasMore && onLoadMore && !loadMorePending) {
 				const scrollBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
 				if (scrollBottom < loadMoreThreshold) {
+					loadMorePending = true;
 					onLoadMore();
+					// Reset after a short delay to allow the next load
+					setTimeout(() => { loadMorePending = false; }, 100);
 				}
 			}
 		});
@@ -417,6 +433,7 @@
 	onDestroy(() => {
 		if (resizeRAF) cancelAnimationFrame(resizeRAF);
 		if (scrollRAF) cancelAnimationFrame(scrollRAF);
+		if (visibleRangeRAF) cancelAnimationFrame(visibleRangeRAF);
 	});
 
 	// Set context for child components
