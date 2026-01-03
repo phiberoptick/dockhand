@@ -67,6 +67,7 @@
 		cell?: Snippet<[ColumnConfig, T, DataGridRowState]>;
 		emptyState?: Snippet;
 		loadingState?: Snippet;
+		footer?: Snippet;
 	}
 
 	let {
@@ -100,7 +101,8 @@
 		headerCell,
 		cell,
 		emptyState,
-		loadingState
+		loadingState,
+		footer
 	}: Props = $props();
 
 	// Column configuration
@@ -112,14 +114,16 @@
 	// Grid preferences (reactive)
 	const gridPrefs = $derived($gridPreferencesStore);
 
-	// Get ordered visible columns from preferences
+	// Get ordered visible columns from preferences (excluding fixed columns)
 	const orderedColumns = $derived.by(() => {
 		const prefs = gridPrefs[gridId];
 		if (!prefs?.columns?.length) {
 			// Default: all configurable columns visible
 			return columnConfigs.filter((c) => !c.fixed).map((c) => c.id);
 		}
-		return prefs.columns.filter((c) => c.visible).map((c) => c.id);
+		// Filter out fixed columns - they're rendered separately via fixedStartCols/fixedEndCols
+		const fixedIds = new Set([...fixedStartCols, ...fixedEndCols]);
+		return prefs.columns.filter((c) => c.visible && !fixedIds.has(c.id)).map((c) => c.id);
 	});
 
 	// Identify visible grow columns (columns with grow: true that are currently visible)
@@ -153,6 +157,7 @@
 	let resizeRAF: number | null = null;
 	let scrollRAF: number | null = null;
 	let visibleRangeRAF: number | null = null;
+	let containerResizeRAF: number | null = null;
 	let loadMorePending = false;
 
 	// Helper to get base width for a column (without grow calculation)
@@ -348,11 +353,38 @@
 
 	// Virtual scroll calculations
 	const totalHeight = $derived(virtualScroll ? data.length * rowHeight : 0);
+
+	// Memoization state for visibleData to prevent creating new arrays on every scroll
+	let prevStartIndex = -1;
+	let prevEndIndex = -1;
+	let prevDataRef: T[] | null = null;
+	let cachedVisibleData: T[] = [];
+
+	// Memoized startIndex/endIndex/visibleData calculation
 	const startIndex = $derived(virtualScroll ? Math.max(0, Math.floor(scrollTop / rowHeight) - bufferRows) : 0);
 	const endIndex = $derived(
 		virtualScroll ? Math.min(data.length, Math.ceil((scrollTop + containerHeight) / rowHeight) + bufferRows) : data.length
 	);
-	const visibleData = $derived(virtualScroll ? data.slice(startIndex, endIndex) : data);
+
+	// Memoized visibleData - only create new array when bounds or data actually change
+	const visibleData = $derived.by(() => {
+		if (!virtualScroll) return data;
+
+		// If data reference changed, we must reslice
+		const dataChanged = data !== prevDataRef;
+
+		// Only create new array if bounds or data actually changed
+		if (!dataChanged && startIndex === prevStartIndex && endIndex === prevEndIndex && cachedVisibleData.length > 0) {
+			return cachedVisibleData;
+		}
+
+		prevStartIndex = startIndex;
+		prevEndIndex = endIndex;
+		prevDataRef = data;
+		cachedVisibleData = data.slice(startIndex, endIndex);
+		return cachedVisibleData;
+	});
+
 	const offsetY = $derived(virtualScroll ? startIndex * rowHeight : 0);
 
 	// Notify parent of visible range changes (throttled via RAF)
@@ -414,12 +446,17 @@
 			}
 
 			const resizeObserver = new ResizeObserver((entries) => {
-				for (const entry of entries) {
-					scrollContainerWidth = entry.contentRect.width;
-					if (virtualScroll) {
-						containerHeight = entry.contentRect.height;
+				// Throttle with RAF to prevent "ResizeObserver loop" warnings
+				if (containerResizeRAF) return;
+				containerResizeRAF = requestAnimationFrame(() => {
+					containerResizeRAF = null;
+					for (const entry of entries) {
+						scrollContainerWidth = entry.contentRect.width;
+						if (virtualScroll) {
+							containerHeight = entry.contentRect.height;
+						}
 					}
-				}
+				});
 			});
 			resizeObserver.observe(scrollContainer);
 
@@ -434,6 +471,7 @@
 		if (resizeRAF) cancelAnimationFrame(resizeRAF);
 		if (scrollRAF) cancelAnimationFrame(scrollRAF);
 		if (visibleRangeRAF) cancelAnimationFrame(visibleRangeRAF);
+		if (containerResizeRAF) cancelAnimationFrame(containerResizeRAF);
 	});
 
 	// Set context for child components
@@ -457,15 +495,43 @@
 		highlightedKey
 	});
 
-	// Helper to get row state
+	// Row state cache to prevent creating new objects on every scroll
+	let rowStateCache = new WeakMap<object, DataGridRowState>();
+	let rowStateCacheDataRef: T[] | null = null;
+
+	// Clear row state cache when data reference changes
+	$effect(() => {
+		if (data !== rowStateCacheDataRef) {
+			rowStateCache = new WeakMap();
+			rowStateCacheDataRef = data;
+		}
+	});
+
+	// Helper to get row state (memoized via WeakMap)
 	function getRowState(item: T, index: number): DataGridRowState {
-		return {
+		const actualIndex = virtualScroll ? startIndex + index : index;
+
+		// Try to get cached state
+		const cached = rowStateCache.get(item as object);
+		if (cached && cached.index === actualIndex) {
+			// Update mutable fields that may have changed
+			cached.isSelected = isSelected(item[keyField]);
+			cached.isHighlighted = highlightedKey === item[keyField];
+			cached.isExpanded = isExpanded(item[keyField]);
+			return cached;
+		}
+
+		// Create new state object and cache it
+		const state: DataGridRowState = {
 			isSelected: isSelected(item[keyField]),
 			isHighlighted: highlightedKey === item[keyField],
 			isSelectable: isItemSelectable(item),
 			isExpanded: isExpanded(item[keyField]),
-			index: virtualScroll ? startIndex + index : index
+			index: actualIndex
 		};
+
+		rowStateCache.set(item as object, state);
+		return state;
 	}
 
 	// Helper to check if column is resizable
@@ -857,6 +923,10 @@
 				<!-- Bottom spacer -->
 				{#if totalHeight - offsetY - (visibleData.length * rowHeight) > 0}
 					<tr><td colspan={fixedStartCols.length + orderedColumns.length + fixedEndCols.length} style="height: {totalHeight - offsetY - (visibleData.length * rowHeight)}px; padding: 0; border: none;"></td></tr>
+				{/if}
+				<!-- Footer (rendered at the bottom of virtual scroll) -->
+				{#if footer}
+					<tr><td colspan={fixedStartCols.length + orderedColumns.length + fixedEndCols.length} class="p-0 border-none">{@render footer()}</td></tr>
 				{/if}
 			</tbody>
 		</table>
