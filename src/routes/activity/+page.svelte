@@ -68,6 +68,7 @@
 
 	// State
 	let events = $state<ContainerEvent[]>([]);
+	let eventIds = $state<Set<number>>(new Set()); // Fast duplicate check
 	let total = $state(0);
 	let loading = $state(false);
 	let loadingMore = $state(false);
@@ -246,6 +247,7 @@
 			toast.success('Activity log cleared');
 			// Reset and reload
 			events = [];
+			eventIds = new Set();
 			total = 0;
 			hasMore = true;
 			fetchEvents(false);
@@ -301,13 +303,22 @@
 			}
 			const data = await response.json();
 
+			// Update total first so hasMore calculation is correct
+			total = data.total;
+
 			if (append) {
 				events = [...events, ...data.events];
+				hasMore = events.length < total;
+				// Update eventIds Set with new events
+				for (const evt of data.events) {
+					eventIds.add(evt.id);
+				}
 			} else {
 				events = data.events;
+				hasMore = events.length < total;
+				// Reset eventIds Set
+				eventIds = new Set(data.events.map((evt: ContainerEvent) => evt.id));
 			}
-			total = data.total;
-			hasMore = events.length < total;
 			dataFetched = true;
 
 			loading = false;
@@ -503,8 +514,9 @@
 					if (eventDate > filterToDate) return;
 				}
 
-				// Add to beginning of events (prepend new events)
-				if (!events.some(event => event.id === newEvent.id)) {
+				// Add to beginning of events (prepend new events) - use Set for fast duplicate check
+				if (!eventIds.has(newEvent.id)) {
+					eventIds.add(newEvent.id);
 					events = [newEvent, ...events];
 					total = total + 1;
 
@@ -839,22 +851,19 @@
 					Loading...
 				</div>
 			{/snippet}
+			{#snippet footer()}
+				{#if loadingMore}
+					<div class="flex items-center justify-center py-2 text-muted-foreground">
+						<Loader2 class="w-4 h-4 animate-spin mr-2" />
+						Loading more...
+					</div>
+				{:else if !hasMore && events.length > 0}
+					<div class="text-center py-2 text-sm text-muted-foreground">
+						End of results ({total.toLocaleString()} events)
+					</div>
+				{/if}
+			{/snippet}
 		</DataGrid>
-
-		<!-- Loading more indicator -->
-		{#if loadingMore}
-			<div class="flex items-center justify-center py-2 text-muted-foreground border-t">
-				<Loader2 class="w-4 h-4 animate-spin mr-2" />
-				Loading more...
-			</div>
-		{/if}
-
-		<!-- End of results -->
-		{#if !hasMore && events.length > 0}
-			<div class="text-center py-2 text-sm text-muted-foreground border-t">
-				End of results ({total.toLocaleString()} events)
-			</div>
-		{/if}
 	{/if}
 </div>
 

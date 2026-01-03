@@ -85,10 +85,19 @@ else
         delgroup dockhand 2>/dev/null || true
 
         # Check for UID conflicts - warn but don't delete other users
+        SKIP_USER_CREATE=false
         if getent passwd "$PUID" >/dev/null 2>&1; then
             EXISTING=$(getent passwd "$PUID" | cut -d: -f1)
-            echo "WARNING: UID $PUID already in use by '$EXISTING'. Using default UID 1001."
-            PUID=1001
+            if [ "$EXISTING" = "bun" ]; then
+                echo "Note: UID $PUID is used by the 'bun' runtime user - reusing it for dockhand"
+                echo "If upgrading from a previous version, you may need to fix data permissions:"
+                echo "  chown -R $PUID:$PGID /path/to/your/data"
+                RUN_USER="bun"
+                SKIP_USER_CREATE=true
+            else
+                echo "WARNING: UID $PUID already in use by '$EXISTING'. Using default UID 1001."
+                PUID=1001
+            fi
         fi
 
         # Handle GID - reuse existing group or create new
@@ -99,21 +108,26 @@ else
             TARGET_GROUP="dockhand"
         fi
 
-        adduser -u "$PUID" -G "$TARGET_GROUP" -h /home/dockhand -D dockhand
+        if [ "$SKIP_USER_CREATE" = "false" ]; then
+            adduser -u "$PUID" -G "$TARGET_GROUP" -h /home/dockhand -D dockhand
+        fi
     fi
 
     # === Directory Ownership ===
-    chown -R dockhand:dockhand /app/data /home/dockhand 2>/dev/null || true
+    chown -R "$RUN_USER":"$RUN_USER" /app/data 2>/dev/null || true
+    if [ "$RUN_USER" = "dockhand" ]; then
+        chown -R dockhand:dockhand /home/dockhand 2>/dev/null || true
+    fi
 
     if [ -n "$DATA_DIR" ] && [ "$DATA_DIR" != "/app/data" ] && [ "$DATA_DIR" != "./data" ]; then
         mkdir -p "$DATA_DIR"
-        chown -R dockhand:dockhand "$DATA_DIR" 2>/dev/null || true
+        chown -R "$RUN_USER":"$RUN_USER" "$DATA_DIR" 2>/dev/null || true
     fi
 fi
 
 # === Docker Socket Access (Optional) ===
 # Check if Docker socket is mounted and accessible
-# Socket path can be configured via environment-specific settings in the app
+# Note: DOCKER_HOST with tcp:// requires configuring an environment via the web UI
 SOCKET_PATH="/var/run/docker.sock"
 
 if [ -S "$SOCKET_PATH" ]; then
@@ -121,7 +135,7 @@ if [ -S "$SOCKET_PATH" ]; then
     if [ "$RUN_USER" != "root" ]; then
         if ! su-exec "$RUN_USER" test -r "$SOCKET_PATH" 2>/dev/null; then
             SOCKET_GID=$(stat -c '%g' "$SOCKET_PATH" 2>/dev/null || echo "unknown")
-            echo "WARNING: Docker socket at $SOCKET_PATH is not readable by dockhand user"
+            echo "WARNING: Docker socket at $SOCKET_PATH is not readable by $RUN_USER user"
             echo ""
             echo "To use local Docker, fix with one of these options:"
             echo ""
@@ -154,8 +168,8 @@ if [ -S "$SOCKET_PATH" ]; then
         echo "Using configured hostname: $DOCKHAND_HOSTNAME"
     fi
 else
-    echo "No Docker socket found at $SOCKET_PATH"
-    echo "Configure Docker environments via the web UI (Settings > Environments)"
+    echo "No local Docker socket mounted (this is normal when using socket-proxy or remote Docker)"
+    echo "Configure your Docker environment via the web UI: Settings > Environments"
 fi
 
 # === Run Application ===
@@ -167,10 +181,11 @@ if [ "$RUN_USER" = "root" ]; then
         exec "$@"
     fi
 else
-    # Running as dockhand user
+    # Running as non-root user
+    echo "Running as user: $RUN_USER"
     if [ "$1" = "" ]; then
-        exec su-exec dockhand bun run ./build/index.js
+        exec su-exec "$RUN_USER" bun run ./build/index.js
     else
-        exec su-exec dockhand "$@"
+        exec su-exec "$RUN_USER" "$@"
     fi
 fi

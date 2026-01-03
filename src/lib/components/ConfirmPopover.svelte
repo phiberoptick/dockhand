@@ -61,7 +61,6 @@
 	});
 
 	function handleConfirm() {
-		console.log('[ConfirmPopover] handleConfirm called, onConfirm:', typeof onConfirm);
 		onConfirm();
 		open = false;
 		onOpenChange(false);

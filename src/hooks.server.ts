@@ -73,6 +73,10 @@ const PUBLIC_PATHS = [
 
 // Check if path is public
 function isPublicPath(pathname: string): boolean {
+	// Webhook endpoints have their own auth (signature/secret verification)
+	if (pathname.match(/^\/api\/git\/stacks\/\d+\/webhook$/)) return true;
+	if (pathname.match(/^\/api\/git\/webhook\/\d+$/)) return true;
+
 	return PUBLIC_PATHS.some(path => pathname === path || pathname.startsWith(path + '/'));
 }
 

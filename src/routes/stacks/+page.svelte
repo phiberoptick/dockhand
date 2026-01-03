@@ -553,9 +553,19 @@
 				return;
 			}
 
-			const dockerStacks = await stacksRes.json();
-			const sourcesData = await sourcesRes.json();
-			const gitStacksData = await gitStacksRes.json();
+			// Safe JSON parsing - handle potential non-JSON responses
+			const safeJson = async (res: Response, fallback: any) => {
+				try {
+					return await res.json();
+				} catch {
+					console.warn(`[Stacks] Failed to parse response from ${res.url}`);
+					return fallback;
+				}
+			};
+
+			const dockerStacks = await safeJson(stacksRes, []);
+			const sourcesData = await safeJson(sourcesRes, {});
+			const gitStacksData = await safeJson(gitStacksRes, []);
 
 			// Debug logging
 			if (gitStacksData?.error) {
@@ -736,9 +746,19 @@
 		stackActionLoading = name;
 		try {
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/down`, envId), { method: 'POST' });
+			// Log raw response for debugging
+			const rawText = await response.text();
+			console.log(`[downStack] Response status: ${response.status}, raw body:`, rawText);
+
 			if (!response.ok) {
-				const data = await response.json();
-				const errorMsg = data.error || 'Failed to bring down stack';
+				let errorMsg = 'Failed to bring down stack';
+				try {
+					const data = JSON.parse(rawText);
+					errorMsg = data.error || errorMsg;
+				} catch {
+					// Response may not be valid JSON
+					errorMsg = rawText || errorMsg;
+				}
 				showErrorDialog(`Failed to bring down ${name}`, errorMsg);
 				return;
 			}
