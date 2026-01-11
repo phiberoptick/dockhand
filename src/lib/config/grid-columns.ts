@@ -37,7 +37,8 @@ export const imageTagColumns: ColumnConfig[] = [
 	{ id: 'id', label: 'ID', width: 120, minWidth: 80 },
 	{ id: 'size', label: 'Size', width: 80, minWidth: 60 },
 	{ id: 'created', label: 'Created', width: 140, minWidth: 100 },
-	{ id: 'actions', label: '', fixed: 'end', width: 100, resizable: false }
+	{ id: 'used', label: 'Used by', width: 100, minWidth: 70 },
+	{ id: 'actions', label: '', fixed: 'end', width: 200, resizable: false }
 ];
 
 // Network grid columns
@@ -58,7 +59,8 @@ export const stackColumns: ColumnConfig[] = [
 	{ id: 'expand', label: '', fixed: 'start', width: 24, resizable: false },
 	{ id: 'name', label: 'Name', sortable: true, sortField: 'name', width: 180, minWidth: 100, grow: true },
 	{ id: 'status', label: 'Status', sortable: true, sortField: 'status', width: 120, minWidth: 90 },
-	{ id: 'source', label: 'Source', width: 100, minWidth: 60 },
+	{ id: 'source', label: 'Source', width: 100, minWidth: 100, noTruncate: true },
+	{ id: 'location', label: 'Location', width: 180, minWidth: 100 },
 	{ id: 'containers', label: 'Containers', sortable: true, sortField: 'containers', width: 100, minWidth: 70 },
 	{ id: 'cpu', label: 'CPU', sortable: true, sortField: 'cpu', width: 60, minWidth: 50, align: 'right' },
 	{ id: 'memory', label: 'Memory', sortable: true, sortField: 'memory', width: 70, minWidth: 50, align: 'right' },

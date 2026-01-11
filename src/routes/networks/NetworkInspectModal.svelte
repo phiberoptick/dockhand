@@ -61,7 +61,7 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-w-4xl h-[90vh] flex flex-col">
+	<Dialog.Content class="max-w-4xl max-h-[90vh] flex flex-col">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<Network class="w-5 h-5" />

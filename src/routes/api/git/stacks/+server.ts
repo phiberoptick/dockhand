@@ -11,7 +11,7 @@ import {
 import { deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
 import { registerSchedule } from '$lib/server/scheduler';
-import crypto from 'node:crypto';
+import { secureRandomBytes } from '$lib/server/crypto-fallback';
 
 export const GET: RequestHandler = async ({ url, cookies }) => {
 	const auth = await authorize(cookies);
@@ -94,7 +94,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		// Generate webhook secret if webhook is enabled
 		let webhookSecret = data.webhookSecret;
 		if (data.webhookEnabled && !webhookSecret) {
-			webhookSecret = crypto.randomBytes(32).toString('hex');
+			webhookSecret = secureRandomBytes(32).toString('hex');
 		}
 
 		const gitStack = await createGitStack({

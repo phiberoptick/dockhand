@@ -277,7 +277,7 @@
 				</Tabs.Trigger>
 			</Tabs.List>
 
-			<div class="min-h-[400px] mt-4">
+			<div class="min-h-[200px] sm:min-h-[300px] mt-4">
 				<!-- Basic Tab -->
 				<Tabs.Content value="basic" class="space-y-4 h-full overflow-y-auto">
 				<div class="space-y-2">

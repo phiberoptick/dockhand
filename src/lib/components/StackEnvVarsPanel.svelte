@@ -46,38 +46,35 @@
 	let confirmClearOpen = $state(false);
 	let contentAreaRef: HTMLDivElement;
 	let parseWarnings = $state<string[]>([]);
-	let hasMergedOnLoad = $state(false);
 
 	// Count of secrets (for display in hint)
 	const secretCount = $derived(variables.filter(v => v.isSecret && v.key.trim()).length);
 
 	/**
-	 * Merge variables and rawContent on initial load.
-	 * Called by parent after setting both variables and rawContent.
-	 * This ensures both are in sync regardless of which view mode is active.
+	 * Sync variables with rawContent after initial load.
+	 * Pass the loaded data directly to avoid timing issues with bindable props.
+	 * Merges: secrets from loadedVars (DB) + non-secrets from loadedRaw (file).
 	 */
-	export function mergeOnLoad() {
-		if (hasMergedOnLoad) return;
-		hasMergedOnLoad = true;
-
-		// If rawContent exists, parse it and merge with variables (which may have secrets from DB)
-		if (rawContent.trim()) {
-			const { vars: rawVars } = parseRawContent(rawContent);
-			const rawVarsByKey = new Map(rawVars.map(v => [v.key, v]));
-
-			// Secrets come from variables (DB), non-secrets come from rawContent (file)
-			// But if a var exists in variables but not in rawContent, keep it (could be new)
-			const secrets = variables.filter(v => v.isSecret);
-			const nonSecretsFromRaw = rawVars;
-
-			// Also keep non-secrets from variables that aren't in raw (new vars added before first save)
-			const rawKeys = new Set(rawVars.map(v => v.key));
-			const newNonSecrets = variables.filter(v => !v.isSecret && v.key.trim() && !rawKeys.has(v.key));
-
-			variables = [...nonSecretsFromRaw, ...newNonSecrets, ...secrets];
+	export function syncAfterLoad(loadedVars: EnvVar[], loadedRaw: string) {
+		if (!loadedRaw.trim()) {
+			// No raw content - just use the loaded variables as-is
+			variables = loadedVars;
+			rawContent = '';
+			return;
 		}
-		// If no rawContent, variables is already correct (from DB), just need to generate raw
-		// for when user switches to text view (done in handleViewModeChange)
+
+		const { vars: rawVars } = parseRawContent(loadedRaw);
+
+		// Secrets come from loadedVars (DB), non-secrets come from loadedRaw (file)
+		const secrets = loadedVars.filter(v => v.isSecret);
+
+		// Also keep non-secrets from loadedVars that aren't in raw (new vars added before first save)
+		const rawKeys = new Set(rawVars.map(v => v.key));
+		const newNonSecrets = loadedVars.filter(v => !v.isSecret && v.key.trim() && !rawKeys.has(v.key));
+
+		// Set both at once to avoid any intermediate states
+		variables = [...rawVars, ...newNonSecrets, ...secrets];
+		rawContent = loadedRaw;
 	}
 
 	/**

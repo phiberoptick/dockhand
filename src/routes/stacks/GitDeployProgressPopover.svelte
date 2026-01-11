@@ -175,7 +175,7 @@
 		{@render children()}
 	</Popover.Trigger>
 	<Popover.Content
-		class="w-80 p-0 overflow-hidden flex flex-col"
+		class="w-80 p-0 overflow-hidden flex flex-col z-[200]"
 		align="end"
 		sideOffset={8}
 		interactOutsideBehavior={overallStatus !== 'idle' ? 'ignore' : 'close'}

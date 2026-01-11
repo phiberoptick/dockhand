@@ -604,21 +604,21 @@ async function initializeDatabase() {
 	logHeader('DATABASE INITIALIZATION');
 
 	if (isPostgres) {
-		// PostgreSQL via Bun.sql
+		// PostgreSQL via postgres-js (more stable than bun:sql for concurrent queries)
 		validatePostgresUrl(config.databaseUrl!);
 
 		logInfo(`Database: PostgreSQL`);
 		logInfo(`Connection: ${maskPassword(config.databaseUrl!)}`);
 
-		const { drizzle } = await import('drizzle-orm/bun-sql');
-		const { SQL } = await import('bun');
+		const { drizzle } = await import('drizzle-orm/postgres-js');
+		const postgres = (await import('postgres')).default;
 
 		// Import PostgreSQL schema
 		schema = await import('./schema/pg-schema.js');
 
 		if (verbose) logStep('Connecting to PostgreSQL...');
 		try {
-			rawClient = new SQL(config.databaseUrl!);
+			rawClient = postgres(config.databaseUrl!);
 			db = drizzle({ client: rawClient, schema });
 			logSuccess('PostgreSQL connection established');
 		} catch (error) {

@@ -60,49 +60,53 @@ export const POST: RequestHandler = async ({ request }) => {
 				headers['X-Hawser-Token'] = config.hawserToken;
 			}
 
-			// For HTTPS with custom CA or skip verification, use subprocess to avoid Vite dev server TLS issues
-			if (protocol === 'https' && (config.tlsCa || config.tlsSkipVerify)) {
-				const fs = await import('node:fs');
-				let tempCaPath = '';
+			// For HTTPS with custom CA, client certs, or skip verification, use subprocess to avoid Vite dev server TLS issues
+			if (protocol === 'https' && (config.tlsCa || config.tlsCert || config.tlsSkipVerify)) {
+				// Clean PEM content (remove extra whitespace)
+				const cleanPem = (pem: string) => pem
+					.split('\n')
+					.map((line) => line.trim())
+					.filter((line) => line.length > 0)
+					.join('\n');
 
-				// Clean the certificate - remove leading/trailing whitespace from each line
-				let cleanedCa = '';
-				if (config.tlsCa && !config.tlsSkipVerify) {
-					cleanedCa = config.tlsCa
-						.split('\n')
-						.map((line) => line.trim())
-						.filter((line) => line.length > 0)
-						.join('\n');
+				// Pass config as base64-encoded JSON to avoid escaping issues
+				const tlsConfig = {
+					url: `https://${host}:${port}/info`,
+					headers,
+					tlsSkipVerify: config.tlsSkipVerify || false,
+					ca: config.tlsCa && !config.tlsSkipVerify ? cleanPem(config.tlsCa) : null,
+					cert: config.tlsCert ? cleanPem(config.tlsCert) : null,
+					key: config.tlsKey ? cleanPem(config.tlsKey) : null,
+					host
+				};
+				const configBase64 = Buffer.from(JSON.stringify(tlsConfig)).toString('base64');
 
-					tempCaPath = `/tmp/dockhand-ca-${Date.now()}.pem`;
-					fs.writeFileSync(tempCaPath, cleanedCa);
-				}
-
-				// Build Bun script that runs outside Vite's process (Vite interferes with TLS)
-				const tlsConfig = config.tlsSkipVerify
-					? `tls: { rejectUnauthorized: false }`
-					: `tls: { ca: await Bun.file('${tempCaPath}').text() }`;
-
+				// Inline script with config embedded (bun -e doesn't pass argv correctly)
 				const scriptContent = `
-const response = await fetch('https://${host}:${port}/info', {
-  headers: ${JSON.stringify(headers)},
-  ${tlsConfig}
-});
-const body = await response.text();
-console.log(JSON.stringify({ status: response.status, body }));
+const config = JSON.parse(Buffer.from('${configBase64}', 'base64').toString());
+try {
+  const tls = {
+    sessionTimeout: 0,
+    servername: config.host,
+    rejectUnauthorized: !config.tlsSkipVerify
+  };
+  if (config.ca) tls.ca = [config.ca];
+  if (config.cert) tls.cert = [config.cert];
+  if (config.key) tls.key = config.key;
+  const response = await fetch(config.url, {
+    headers: config.headers,
+    tls,
+    keepalive: false
+  });
+  const body = await response.text();
+  console.log(JSON.stringify({ status: response.status, body }));
+} catch (e) {
+  console.log(JSON.stringify({ error: e.message }));
+}
 `;
-				const scriptPath = `/tmp/dockhand-test-${Date.now()}.ts`;
-				fs.writeFileSync(scriptPath, scriptContent);
-
-				const proc = Bun.spawn(['bun', scriptPath], { stdout: 'pipe', stderr: 'pipe' });
+				const proc = Bun.spawn(['bun', '-e', scriptContent], { stdout: 'pipe', stderr: 'pipe' });
 				const output = await new Response(proc.stdout).text();
 				const stderr = await new Response(proc.stderr).text();
-
-				// Cleanup temp files
-				if (tempCaPath) {
-					try { fs.unlinkSync(tempCaPath); } catch {}
-				}
-				try { fs.unlinkSync(scriptPath); } catch {}
 
 				if (!output.trim()) {
 					throw new Error(stderr || 'Empty response from TLS test subprocess');

@@ -1,9 +1,9 @@
 import { json } from '@sveltejs/kit';
-import { getStackEnvVars, setStackEnvVars } from '$lib/server/db';
-import { getStacksDir } from '$lib/server/stacks';
+import { getStackEnvVars, setStackEnvVars, getStackSource } from '$lib/server/db';
+import { findStackDir } from '$lib/server/stacks';
 import { authorize } from '$lib/server/authorize';
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import type { RequestHandler } from './$types';
 
 /**
@@ -61,12 +61,37 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		const dbVariables = await getStackEnvVars(stackName, envIdNum, true);
 		const dbByKey = new Map(dbVariables.map(v => [v.key, v]));
 
-		// Try to read .env file from stack directory (only contains non-secrets)
-		const stacksDir = getStacksDir();
-		const envFilePath = join(stacksDir, stackName, '.env');
+		// Check if this stack has a custom compose path configured
+		const source = await getStackSource(stackName, envIdNum);
+
+		// Determine the env file path based on path resolution rules:
+		// - envPath = '' (empty string) → explicitly no env file
+		// - envPath = '/path/.env' → use custom path
+		// - envPath = null with composePath → suggest .env next to compose (but don't auto-load)
+		// - envPath = null without composePath → use default location
+		let envFilePath: string | null = null;
+
+		if (source?.envPath === '') {
+			// Empty string = explicitly no env file
+			envFilePath = null;
+		} else if (source?.envPath) {
+			// Custom env path specified
+			envFilePath = source.envPath;
+		} else if (source?.composePath) {
+			// Custom compose path but no env path - suggest .env next to compose
+			// For loading, check if it exists (but don't fail if it doesn't)
+			envFilePath = join(dirname(source.composePath), '.env');
+		} else {
+			// Default location - .env in stack directory
+			const stackDir = await findStackDir(stackName, envIdNum);
+			if (stackDir) {
+				envFilePath = join(stackDir, '.env');
+			}
+		}
+
 		let fileVars: Record<string, string> = {};
 
-		if (existsSync(envFilePath)) {
+		if (envFilePath && existsSync(envFilePath)) {
 			try {
 				const content = await Bun.file(envFilePath).text();
 				fileVars = parseEnvFile(content);

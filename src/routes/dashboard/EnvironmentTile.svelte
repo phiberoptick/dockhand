@@ -1,6 +1,6 @@
 <script lang="ts">
 	import * as Card from '$lib/components/ui/card';
-	import { Wifi, WifiOff, ShieldCheck, Activity, Cpu, Settings, Unplug, Icon, Route, UndoDot, CircleArrowUp, CircleFadingArrowUp } from 'lucide-svelte';
+	import { Wifi, WifiOff, ShieldCheck, Activity, Cpu, Settings, Unplug, Icon, Route, UndoDot, CircleArrowUp, CircleFadingArrowUp, Loader2 } from 'lucide-svelte';
 	import { whale } from '@lucide/lab';
 	import { getIconComponent } from '$lib/utils/icons';
 	import { goto } from '$app/navigation';
@@ -45,10 +45,11 @@
 	// Helper flags
 	const isMini = $derived(is1x1 || is2x1);
 	const isWide = $derived(width >= 2);
-	// Show offline when online is explicitly false
-	// Only delay showing offline if online is undefined (truly unknown state during initial load)
+	// Show offline only when online is explicitly false (confirmed offline)
+	// Show connecting when online is undefined (initial load, not yet determined)
 	const isStillLoading = $derived(stats.loading && Object.values(stats.loading).some(v => v === true));
-	const showOffline = $derived(stats.online === false || (!stats.online && !isStillLoading));
+	const showOffline = $derived(stats.online === false);
+	const showConnecting = $derived(stats.online === undefined);
 </script>
 
 <Card.Root
@@ -84,10 +85,12 @@
 					<div class="min-w-0 overflow-hidden">
 						<div class="flex items-center gap-1.5">
 							<span class="font-medium text-sm truncate">{stats.name}</span>
-							{#if !showOffline}
-								<Wifi class="w-3 h-3 text-green-500 shrink-0" />
-							{:else}
+							{#if showConnecting}
+								<Loader2 class="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+							{:else if showOffline}
 								<WifiOff class="w-3 h-3 text-red-500 shrink-0" />
+							{:else}
+								<Wifi class="w-3 h-3 text-green-500 shrink-0" />
 							{/if}
 						</div>
 						<span class="text-xs text-muted-foreground truncate block" title={stats.connectionType === 'socket' ? (stats.socketPath || '/var/run/docker.sock') : stats.connectionType === 'hawser-edge' ? 'Edge connection' : (stats.port ? `${stats.host}:${stats.port}` : stats.host || 'Unknown host')}>
@@ -138,13 +141,13 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-hidden">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="space-y-2">
-					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -178,10 +181,12 @@
 					<div class="min-w-0 overflow-hidden">
 						<div class="flex items-center gap-1.5">
 							<span class="font-medium text-sm truncate">{stats.name}</span>
-							{#if !showOffline}
-								<Wifi class="w-3 h-3 text-green-500 shrink-0" />
-							{:else}
+							{#if showConnecting}
+								<Loader2 class="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+							{:else if showOffline}
 								<WifiOff class="w-3 h-3 text-red-500 shrink-0" />
+							{:else}
+								<Wifi class="w-3 h-3 text-green-500 shrink-0" />
 							{/if}
 						</div>
 						<span class="text-xs text-muted-foreground truncate block" title={stats.connectionType === 'socket' ? (stats.socketPath || '/var/run/docker.sock') : stats.connectionType === 'hawser-edge' ? 'Edge connection' : (stats.port ? `${stats.host}:${stats.port}` : stats.host || 'Unknown host')}>
@@ -232,10 +237,12 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-hidden">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="flex gap-4">
 					<div class="space-y-2">
-						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 						<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 					</div>
 					{#if stats.recentEvents}
@@ -244,8 +251,6 @@
 						</div>
 					{/if}
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -279,10 +284,12 @@
 				<div class="min-w-0 overflow-hidden">
 					<div class="flex items-center gap-1.5">
 						<span class="font-medium text-sm truncate">{stats.name}</span>
-						{#if !showOffline}
-							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
-						{:else}
+						{#if showConnecting}
+							<Loader2 class="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+						{:else if showOffline}
 							<WifiOff class="w-3 h-3 text-red-500 shrink-0" />
+						{:else}
+							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
 						{/if}
 					</div>
 					<span class="text-xs text-muted-foreground truncate block" title={stats.connectionType === 'socket' ? (stats.socketPath || '/var/run/docker.sock') : stats.connectionType === 'hawser-edge' ? 'Edge connection' : (stats.port ? `${stats.host}:${stats.port}` : stats.host || 'Unknown host')}>
@@ -333,9 +340,11 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="space-y-3">
-					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 					{#if stats.collectMetrics && stats.metrics}
 						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -343,8 +352,6 @@
 					<DashboardResourceStats images={stats.images} volumes={stats.volumes} networks={stats.networks} stacks={stats.stacks} loading={stats.loading} />
 					<DashboardEventsSummary today={stats.events.today} total={stats.events.total} />
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -378,10 +385,12 @@
 				<div class="min-w-0 overflow-hidden">
 					<div class="flex items-center gap-1.5">
 						<span class="font-medium text-sm truncate">{stats.name}</span>
-						{#if !showOffline}
-							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
-						{:else}
+						{#if showConnecting}
+							<Loader2 class="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+						{:else if showOffline}
 							<WifiOff class="w-3 h-3 text-red-500 shrink-0" />
+						{:else}
+							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
 						{/if}
 					</div>
 					<span class="text-xs text-muted-foreground truncate block" title={stats.connectionType === 'socket' ? (stats.socketPath || '/var/run/docker.sock') : stats.connectionType === 'hawser-edge' ? 'Edge connection' : (stats.port ? `${stats.host}:${stats.port}` : stats.host || 'Unknown host')}>
@@ -432,9 +441,11 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="space-y-3">
-					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 					{#if stats.collectMetrics && stats.metrics}
 						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -445,8 +456,6 @@
 						<DashboardRecentEvents events={stats.recentEvents} limit={8} onclick={oneventsclick} />
 					{/if}
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -480,10 +489,12 @@
 				<div class="min-w-0 overflow-hidden">
 					<div class="flex items-center gap-1.5">
 						<span class="font-medium text-sm truncate">{stats.name}</span>
-						{#if !showOffline}
-							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
-						{:else}
+						{#if showConnecting}
+							<Loader2 class="w-3 h-3 text-muted-foreground animate-spin shrink-0" />
+						{:else if showOffline}
 							<WifiOff class="w-3 h-3 text-red-500 shrink-0" />
+						{:else}
+							<Wifi class="w-3 h-3 text-green-500 shrink-0" />
 						{/if}
 					</div>
 					<span class="text-xs text-muted-foreground truncate block" title={stats.connectionType === 'socket' ? (stats.socketPath || '/var/run/docker.sock') : stats.connectionType === 'hawser-edge' ? 'Edge connection' : (stats.port ? `${stats.host}:${stats.port}` : stats.host || 'Unknown host')}>
@@ -534,9 +545,11 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="space-y-3">
-					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+					<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 					<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 					{#if stats.collectMetrics && stats.metrics}
 						<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -546,10 +559,8 @@
 					{#if stats.recentEvents}
 						<DashboardRecentEvents events={stats.recentEvents} limit={8} onclick={oneventsclick} />
 					{/if}
-					<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers} />
+					<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -577,11 +588,13 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
-						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 						<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 						{#if stats.metrics}
 							<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -591,11 +604,9 @@
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">
-						<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers} />
+						<DashboardTopContainers containers={stats.topContainers} limit={8} loading={stats.loading?.topContainers || showConnecting} />
 					</div>
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -623,11 +634,13 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
-						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 						<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 						{#if stats.metrics}
 							<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -640,14 +653,12 @@
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">
-						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers} />
+						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
 						{#if stats.collectMetrics && stats.metrics && stats.metricsHistory}
 							<DashboardCpuMemoryCharts metricsHistory={stats.metricsHistory} metrics={stats.metrics} />
 						{/if}
 					</div>
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 
@@ -675,11 +686,13 @@
 		</Card.Header>
 		<DashboardLabels labels={stats.labels} />
 		<Card.Content class="overflow-auto" style="max-height: calc(100% - 60px);">
-			{#if !showOffline}
+			{#if showOffline}
+				<DashboardOfflineState error={stats.error} compact={isMini} />
+			{:else}
 				<div class="grid grid-cols-2 gap-4">
 					<!-- Left column -->
 					<div class="space-y-3">
-						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers} />
+						<DashboardContainerStats containers={stats.containers} loading={stats.loading?.containers || showConnecting} />
 						<DashboardHealthBanner unhealthy={stats.containers.unhealthy} restarting={stats.containers.restarting} />
 						{#if stats.metrics}
 							<DashboardCpuMemoryBars metrics={stats.metrics} collectMetrics={stats.collectMetrics} />
@@ -689,18 +702,16 @@
 						{#if stats.recentEvents}
 							<DashboardRecentEvents events={stats.recentEvents} limit={10} onclick={oneventsclick} />
 						{/if}
-						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers} />
+						<DashboardTopContainers containers={stats.topContainers} limit={10} loading={stats.loading?.topContainers || showConnecting} />
 					</div>
 					<!-- Right column -->
 					<div class="space-y-3 border-l border-border/50 pl-4">
 						{#if stats.collectMetrics && stats.metrics && stats.metricsHistory}
 							<DashboardCpuMemoryCharts metricsHistory={stats.metricsHistory} metrics={stats.metrics} />
 						{/if}
-						<DashboardDiskUsage imagesSize={stats.images.totalSize} volumesSize={stats.volumes.totalSize} containersSize={stats.containersSize} buildCacheSize={stats.buildCacheSize} showPieChart={true} loading={stats.loading?.diskUsage} />
+						<DashboardDiskUsage imagesSize={stats.images.totalSize} volumesSize={stats.volumes.totalSize} containersSize={stats.containersSize} buildCacheSize={stats.buildCacheSize} showPieChart={true} loading={stats.loading?.diskUsage || showConnecting} />
 					</div>
 				</div>
-			{:else}
-				<DashboardOfflineState error={stats.error} compact={isMini} />
 			{/if}
 		</Card.Content>
 	{/if}

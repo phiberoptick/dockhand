@@ -1,5 +1,24 @@
 [
   {
+    "version": "1.0.7",
+    "date": "2026-01-06",
+    "comingSoon": false,
+    "changes": [
+      { "type": "feature", "text": "Adopt stacks created outside Dockhand" },
+      { "type": "feature", "text": "Activity event collection mode (Stream/Poll) and metrics interval settings for reduced CPU usage" },
+      { "type": "feature", "text": "Baseline Docker images for CPUs without AVX support" },
+      { "type": "feature", "text": "Show amber \"Unused\" badge for images not used by any container" },
+      { "type": "feature", "text": "Prune unused button to remove all unused images (not just dangling)" },
+      { "type": "fix", "text": "Stack collision on disk - stacks are now saved in environment folders" },
+      { "type": "fix", "text": "Checkbox selection delay in datagrid" },
+      { "type": "fix", "text": "Crypto fallback for old Linux kernels (<3.17) that lack getrandom() syscall" },
+      { "type": "fix", "text": "Dashboard performance with many environments" },
+      { "type": "fix", "text": "Can't use authenticated custom registry"},
+      { "type": "fix", "text": "mTLS connections failing due to Bun TLS caching bug"}
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.7"
+  },
+  {
     "version": "1.0.6",
     "date": "2026-01-03",
     "changes": [

@@ -415,6 +415,10 @@
 			newLabelInput = '';
 			formPublicIp = environment.publicIp || '';
 			modalTab = 'general';
+			// Reset token state for this environment (important when switching between envs)
+			hawserToken = null;
+			generatedToken = null;
+			pendingToken = null;
 			// Load scanner settings, notifications, update check settings, and timezone
 			loadScannerSettings(environment.id);
 			loadEnvNotifications(environment.id);
@@ -825,6 +829,11 @@
 		}
 	}
 
+	// Reload only availability/versions without overwriting user's unsaved settings changes
+	async function reloadScannerAvailability(envId?: number) {
+		await loadScannerVersionsAsync(envId);
+	}
+
 	async function saveScannerSettings(envId?: number) {
 		try {
 			const response = await fetch('/api/settings/scanner', {
@@ -930,7 +939,8 @@
 		checkingGrypeUpdate = true;
 		grypeUpdateStatus = 'idle';
 		try {
-			const response = await fetch('/api/settings/scanner?checkUpdates=true');
+			const envParam = environment?.id ? `&env=${environment.id}` : '';
+			const response = await fetch(`/api/settings/scanner?checkUpdates=true${envParam}`);
 			const data = await response.json();
 			if (data.updates) {
 				grypeUpdateStatus = data.updates.grype?.hasUpdate ? 'update-available' : 'up-to-date';
@@ -947,7 +957,8 @@
 		checkingTrivyUpdate = true;
 		trivyUpdateStatus = 'idle';
 		try {
-			const response = await fetch('/api/settings/scanner?checkUpdates=true');
+			const envParam = environment?.id ? `&env=${environment.id}` : '';
+			const response = await fetch(`/api/settings/scanner?checkUpdates=true${envParam}`);
 			const data = await response.json();
 			if (data.updates) {
 				trivyUpdateStatus = data.updates.trivy?.hasUpdate ? 'update-available' : 'up-to-date';
@@ -1198,7 +1209,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(o) => { if (o) focusFirstInput(); else onClose(); }}>
-	<Dialog.Content class="max-w-2xl min-h-[800px] max-h-[90vh] flex flex-col overflow-hidden">
+	<Dialog.Content class="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
 		<Dialog.Header class="flex-shrink-0 border-b pb-4">
 			<Dialog.Title class="flex items-center gap-2">
 				{#if !isEditing}
@@ -1362,7 +1373,7 @@
 											<HelpCircle class="w-3.5 h-3.5" />
 										</button>
 									</Popover.Trigger>
-									<Popover.Content class="w-80 text-sm" side="right">
+									<Popover.Content class="w-80 text-sm z-[200]" side="right">
 										<div class="space-y-3">
 											<div class="flex items-start gap-2">
 												<Unplug class="w-4 h-4 mt-0.5 text-cyan-500 shrink-0" />
@@ -2112,7 +2123,7 @@
 											{/if}
 											{#if !loadingScannerVersions}
 												{#if !scannerAvailability.grype}
-													<ImagePullProgressPopover imageName="anchore/grype:latest" envId={environment?.id} onComplete={() => loadScannerSettings(environment?.id)}>
+													<ImagePullProgressPopover imageName="anchore/grype:latest" envId={environment?.id} onComplete={() => reloadScannerAvailability(environment?.id)}>
 														<button class="inline-flex items-center text-2xs px-1.5 py-0 h-4 rounded-full border bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
 															<Download class="w-2.5 h-2.5 mr-0.5" />
 															Pull
@@ -2189,7 +2200,7 @@
 											{/if}
 											{#if !loadingScannerVersions}
 												{#if !scannerAvailability.trivy}
-													<ImagePullProgressPopover imageName="aquasec/trivy:latest" envId={environment?.id} onComplete={() => loadScannerSettings(environment?.id)}>
+													<ImagePullProgressPopover imageName="aquasec/trivy:latest" envId={environment?.id} onComplete={() => reloadScannerAvailability(environment?.id)}>
 														<button class="inline-flex items-center text-2xs px-1.5 py-0 h-4 rounded-full border bg-muted/50 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors">
 															<Download class="w-2.5 h-2.5 mr-0.5" />
 															Pull

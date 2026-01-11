@@ -111,7 +111,7 @@
 			</Button>
 		{/snippet}
 	</Popover.Trigger>
-	<Popover.Content class="w-[350px] p-0" align="start">
+	<Popover.Content class="w-[350px] p-0 z-[200]" align="start">
 		<Command.Root shouldFilter={false}>
 			<Command.Input bind:value={searchQuery} placeholder="Search timezone..." />
 			<Command.List class="max-h-[300px]">

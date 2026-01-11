@@ -225,6 +225,9 @@
 	// Mutable ref for callback - allows updating without recreating editor
 	let onchangeRef: ((value: string) => void) | undefined = onchange;
 
+	// Flag to suppress onchange during programmatic value sync
+	let isSyncingExternalValue = false;
+
 	// Keep callback ref updated when prop changes
 	$effect(() => {
 		onchangeRef = onchange;
@@ -660,8 +663,9 @@
 			view.update(trs);
 
 			// Check if any transaction changed the document
+			// Skip onchange during programmatic value sync (only fire for user edits)
 			const lastChangingTr = trs.findLast(tr => tr.docChanged);
-			if (lastChangingTr && onchangeRef) {
+			if (lastChangingTr && onchangeRef && !isSyncingExternalValue) {
 				// Defer callback to next microtask to avoid blocking input handling
 				// This allows key repeat to work properly
 				const newContent = lastChangingTr.newDoc.toString();
@@ -801,9 +805,12 @@
 			// Only update if the external value differs from editor content
 			// This prevents feedback loops from editor changes
 			if (externalValue !== currentContent) {
+				// Suppress onchange during programmatic sync - only user edits should trigger it
+				isSyncingExternalValue = true;
 				view.dispatch({
 					changes: { from: 0, to: currentContent.length, insert: externalValue }
 				});
+				isSyncingExternalValue = false;
 			}
 		}
 	});

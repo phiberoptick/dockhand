@@ -186,6 +186,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				nodeVersion: process.version,
 				platform: os.platform(),
 				arch: os.arch(),
+				kernel: os.release(),
 				memory: bunInfo.memory,
 				container: containerRuntime,
 				ownContainer

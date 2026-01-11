@@ -543,7 +543,7 @@
 							<!-- Pull and Scan logs (collapsible) -->
 							{#if item.showLogs && hasLogs}
 								<div
-									class="bg-muted/50 px-3 py-2 font-mono text-xs max-h-40 overflow-auto border-t overflow-x-hidden"
+									class="bg-muted/50 px-3 py-2 font-mono text-xs border-t overflow-x-hidden"
 								>
 									{#each item.pullLogs as log}
 										<div class="text-muted-foreground break-all">

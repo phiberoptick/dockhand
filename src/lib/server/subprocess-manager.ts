@@ -102,7 +102,12 @@ export interface ShutdownCommand {
 	type: 'shutdown';
 }
 
-export type MainProcessCommand = RefreshEnvironmentsCommand | ShutdownCommand;
+export interface UpdateIntervalCommand {
+	type: 'update_interval';
+	intervalMs: number;
+}
+
+export type MainProcessCommand = RefreshEnvironmentsCommand | ShutdownCommand | UpdateIntervalCommand;
 
 // Subprocess configuration
 interface SubprocessConfig {
@@ -196,6 +201,20 @@ class SubprocessManager {
 	refreshEnvironments(): void {
 		this.sendToMetrics({ type: 'refresh_environments' });
 		this.sendToEvents({ type: 'refresh_environments' });
+	}
+
+	/**
+	 * Send message to metrics subprocess
+	 */
+	sendToMetricsSubprocess(message: MainProcessCommand): void {
+		this.sendToMetrics(message);
+	}
+
+	/**
+	 * Send message to events subprocess
+	 */
+	sendToEventsSubprocess(message: MainProcessCommand): void {
+		this.sendToEvents(message);
 	}
 
 	/**
@@ -589,5 +608,23 @@ export async function stopSubprocesses(): Promise<void> {
 export function refreshSubprocessEnvironments(): void {
 	if (manager) {
 		manager.refreshEnvironments();
+	}
+}
+
+/**
+ * Send message to event subprocess
+ */
+export function sendToEventSubprocess(message: MainProcessCommand): void {
+	if (manager) {
+		manager.sendToEventsSubprocess(message);
+	}
+}
+
+/**
+ * Send message to metrics subprocess
+ */
+export function sendToMetricsSubprocess(message: MainProcessCommand): void {
+	if (manager) {
+		manager.sendToMetricsSubprocess(message);
 	}
 }

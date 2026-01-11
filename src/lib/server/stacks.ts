@@ -5,8 +5,8 @@
  * All lifecycle operations use docker compose commands.
  */
 
-import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
 import {
 	getEnvironment,
 	getStackEnvVarsAsRecord,
@@ -87,22 +87,6 @@ export interface DeployStackOptions {
 // =============================================================================
 // ERRORS
 // =============================================================================
-
-/**
- * Error for operations on external stacks without compose files
- */
-export class ExternalStackError extends Error {
-	public readonly stackName: string;
-
-	constructor(stackName: string) {
-		super(
-			`Stack "${stackName}" was created outside of Dockhand. ` +
-				`To manage this stack, first import it by clicking the Import button in the stack menu.`
-		);
-		this.name = 'ExternalStackError';
-		this.stackName = stackName;
-	}
-}
 
 /**
  * Error when compose file is missing for a managed stack
@@ -233,6 +217,65 @@ export function getStacksDir(): string {
 }
 
 /**
+ * Get stack directory path for a specific environment.
+ * New stacks use: $DATA_DIR/stacks/<envName>/<stackName>/
+ * Legacy stacks (no env): $DATA_DIR/stacks/<stackName>/
+ *
+ * Automatically looks up environment name from database.
+ */
+export async function getStackDir(stackName: string, envId?: number | null): Promise<string> {
+	const stacksDir = getStacksDir();
+	if (envId) {
+		const env = await getEnvironment(envId);
+		if (env) {
+			return join(stacksDir, env.name, stackName);
+		}
+	}
+	// Legacy path for stacks without environment
+	return join(stacksDir, stackName);
+}
+
+/**
+ * Find stack directory, checking paths in order:
+ * 1. New path (envName): $DATA_DIR/stacks/<envName>/<stackName>/
+ * 2. ID-based path (envId): $DATA_DIR/stacks/<envId>/<stackName>/
+ * 3. Legacy path: $DATA_DIR/stacks/<stackName>/
+ *
+ * Automatically looks up environment name from database.
+ * Always checks legacy path for backwards compatibility with pre-env stacks.
+ */
+export async function findStackDir(stackName: string, envId?: number | null): Promise<string | null> {
+	const stacksDir = getStacksDir();
+
+	// Look up environment name if we have an ID
+	if (envId) {
+		const env = await getEnvironment(envId);
+
+		// 1. Check new path (with envName)
+		if (env) {
+			const namePath = join(stacksDir, env.name, stackName);
+			if (existsSync(namePath)) {
+				return namePath;
+			}
+		}
+
+		// 2. Check ID-based path
+		const idPath = join(stacksDir, String(envId), stackName);
+		if (existsSync(idPath)) {
+			return idPath;
+		}
+	}
+
+	// 3. Always check legacy path (stacks created before env-scoping was added)
+	const legacyPath = join(stacksDir, stackName);
+	if (existsSync(legacyPath)) {
+		return legacyPath;
+	}
+
+	return null;
+}
+
+/**
  * List stacks that have compose files stored locally
  */
 export function listManagedStacks(): string[] {
@@ -256,31 +299,116 @@ export function listManagedStacks(): string[] {
 // =============================================================================
 
 /**
- * Get compose file content for a stack
+ * Result type for getStackComposeFile
+ */
+export interface GetComposeFileResult {
+	success: boolean;
+	content?: string;
+	stackDir?: string;
+	error?: string;
+	needsFileLocation?: boolean;
+	composePath?: string | null;
+	envPath?: string | null;
+	suggestedEnvPath?: string;
+}
+
+/**
+ * Get compose file content for a stack.
+ *
+ * Unified logic for all stacks:
+ * - If composePath is set in DB → use custom path
+ * - If composePath is NULL → use default location (data/stacks/{env}/{name}/)
+ * - If no source record and no files found → return needsFileLocation: true
  */
 export async function getStackComposeFile(
-	stackName: string
-): Promise<{ success: boolean; content?: string; stackDir?: string; error?: string }> {
-	const stacksDir = getStacksDir();
-	const stackDir = join(stacksDir, stackName);
+	stackName: string,
+	envId?: number | null
+): Promise<GetComposeFileResult> {
+	const source = await getStackSource(stackName, envId);
 
-	// Check all common compose file names (Docker Compose v1 and v2 naming conventions)
-	const composeFileNames = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+	// Case 1: Stack not in database = untracked (discovered from Docker but not imported)
+	// User must select the compose file location - don't guess from default location
+	if (!source) {
+		return {
+			success: false,
+			needsFileLocation: true,
+			error: `Select the compose file location for stack "${stackName}"`
+		};
+	}
 
-	for (const fileName of composeFileNames) {
-		const file = Bun.file(join(stackDir, fileName));
-		if (await file.exists()) {
+	// Case 2: Stack has custom composePath set - use it
+	if (source.composePath) {
+		try {
+			if (!existsSync(source.composePath)) {
+				return {
+					success: false,
+					error: `Compose file no longer accessible at ${source.composePath}. The file may have been moved or deleted.`,
+					composePath: source.composePath,
+					envPath: source.envPath
+				};
+			}
+
+			const content = await Bun.file(source.composePath).text();
+			const stackDir = dirname(source.composePath);
+
+			// For custom paths, suggest .env next to compose if envPath not set
+			let suggestedEnvPath: string | undefined;
+			if (source.envPath === null) {
+				suggestedEnvPath = source.composePath.replace(/\/[^/]+$/, '/.env');
+			}
+
 			return {
 				success: true,
-				content: await file.text(),
-				stackDir
+				content,
+				stackDir,
+				composePath: source.composePath,
+				envPath: source.envPath,
+				suggestedEnvPath
+			};
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Unknown error';
+			return {
+				success: false,
+				error: `Failed to read compose file: ${message}`,
+				composePath: source.composePath,
+				envPath: source.envPath
 			};
 		}
 	}
 
+	// Case 3: Stack is in DB but no custom path - check default location
+	// This is for stacks created in Dockhand using the default data directory
+	const stackDir = await findStackDir(stackName, envId);
+
+	if (stackDir) {
+		// Check all common compose file names
+		const composeFileNames = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+
+		for (const fileName of composeFileNames) {
+			const actualComposePath = join(stackDir, fileName);
+			const file = Bun.file(actualComposePath);
+			if (await file.exists()) {
+				// Check for .env file in the same directory
+				const envFilePath = join(stackDir, '.env');
+				const envExists = existsSync(envFilePath);
+
+				return {
+					success: true,
+					content: await file.text(),
+					stackDir,
+					// Always return the actual resolved paths for display
+					composePath: actualComposePath,
+					envPath: envExists ? envFilePath : null
+				};
+			}
+		}
+	}
+
+	// Case 4: Stack is in DB but compose file not found - need user to specify location
 	return {
 		success: false,
-		error: `Compose file not found for stack "${stackName}". The stack may have been created outside of Dockhand.`
+		needsFileLocation: true,
+		error: `Select the compose file location for stack "${stackName}"`
 	};
 }
 
@@ -289,22 +417,206 @@ export async function getStackComposeFile(
  * @param name - Stack name
  * @param content - Compose file content
  * @param create - If true, creates a new stack (fails if exists). If false, updates existing (fails if not exists).
+ * @param envId - Environment ID for path scoping
  */
 export async function saveStackComposeFile(
 	name: string,
 	content: string,
-	create = false
+	create = false,
+	envId?: number | null,
+	options?: {
+		composePath?: string;  // Custom compose file path
+		envPath?: string | null;  // Custom env path (null = default, '' = none)
+		moveFromDir?: string;  // Old directory to move all files from when path changes
+		oldComposePath?: string;  // Old compose file path for renaming
+		oldEnvPath?: string;  // Old env file path for renaming
+	}
 ): Promise<{ success: boolean; error?: string }> {
-	// Validate stack name
-	if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+	// Validate stack name - Docker Compose requires lowercase alphanumeric, hyphens, underscores
+	// Must also start with a letter or number
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
 		return {
 			success: false,
-			error: 'Stack name can only contain letters, numbers, hyphens, and underscores'
+			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
 		};
 	}
 
-	const stacksDir = getStacksDir();
-	const stackDir = join(stacksDir, name);
+	// Check if this stack has a custom compose path configured, or if one was provided
+	const source = await getStackSource(name, envId);
+	const composePath = options?.composePath || source?.composePath;
+
+	// Handle compose file move/rename when path changes
+	if (options?.oldComposePath && options?.composePath &&
+		options.oldComposePath !== options.composePath &&
+		existsSync(options.oldComposePath)) {
+		const newDir = dirname(options.composePath);
+
+		// Ensure target directory exists
+		if (!existsSync(newDir)) {
+			try {
+				mkdirSync(newDir, { recursive: true });
+			} catch (err: any) {
+				console.warn(`[Stack] Failed to create directory ${newDir}: ${err.message}`);
+			}
+		}
+
+		// Move/rename the compose file to new location
+		try {
+			renameSync(options.oldComposePath, options.composePath);
+			console.log(`[Stack] Moved compose file: ${options.oldComposePath} -> ${options.composePath}`);
+		} catch (renameErr: any) {
+			// If rename fails (e.g., cross-filesystem), try copy+delete
+			if (renameErr.code === 'EXDEV') {
+				try {
+					const data = readFileSync(options.oldComposePath);
+					writeFileSync(options.composePath, data);
+					unlinkSync(options.oldComposePath);
+					console.log(`[Stack] Copied compose file (cross-fs): ${options.oldComposePath} -> ${options.composePath}`);
+				} catch (err: any) {
+					console.warn(`[Stack] Failed to copy compose file: ${err.message}`);
+				}
+			} else {
+				console.warn(`[Stack] Failed to move compose file: ${renameErr.message}`);
+			}
+		}
+	}
+
+	// Handle env file move/rename when path changes
+	if (options?.oldEnvPath && options?.envPath &&
+		options.oldEnvPath !== options.envPath &&
+		existsSync(options.oldEnvPath)) {
+		const newDir = dirname(options.envPath);
+
+		// Ensure target directory exists
+		if (!existsSync(newDir)) {
+			try {
+				mkdirSync(newDir, { recursive: true });
+			} catch (err: any) {
+				console.warn(`[Stack] Failed to create directory ${newDir}: ${err.message}`);
+			}
+		}
+
+		// Move/rename the env file to new location
+		try {
+			renameSync(options.oldEnvPath, options.envPath);
+			console.log(`[Stack] Moved env file: ${options.oldEnvPath} -> ${options.envPath}`);
+		} catch (renameErr: any) {
+			// If rename fails (e.g., cross-filesystem), try copy+delete
+			if (renameErr.code === 'EXDEV') {
+				try {
+					const data = readFileSync(options.oldEnvPath);
+					writeFileSync(options.envPath, data);
+					unlinkSync(options.oldEnvPath);
+					console.log(`[Stack] Copied env file (cross-fs): ${options.oldEnvPath} -> ${options.envPath}`);
+				} catch (err: any) {
+					console.warn(`[Stack] Failed to copy env file: ${err.message}`);
+				}
+			} else {
+				console.warn(`[Stack] Failed to move env file: ${renameErr.message}`);
+			}
+		}
+	}
+
+	// Move all files from old directory to new directory when path changes
+	// Get the new directory from composePath
+	const newDir = options?.composePath ? dirname(options.composePath) : null;
+
+	if (options?.moveFromDir && newDir && options.moveFromDir !== newDir && existsSync(options.moveFromDir)) {
+		try {
+			// Ensure new directory exists
+			if (!existsSync(newDir)) {
+				mkdirSync(newDir, { recursive: true });
+			}
+
+			// Move all files from old directory to new directory
+			const files = readdirSync(options.moveFromDir);
+			for (const file of files) {
+				const oldFilePath = join(options.moveFromDir, file);
+				const newFilePath = join(newDir, file);
+
+				try {
+					// Use rename for atomic move (same filesystem) or copy+delete for cross-filesystem
+					renameSync(oldFilePath, newFilePath);
+					console.log(`[Stack] Moved file: ${oldFilePath} -> ${newFilePath}`);
+				} catch (renameErr: any) {
+					// If rename fails (e.g., cross-filesystem), try copy+delete
+					if (renameErr.code === 'EXDEV') {
+						const stat = statSync(oldFilePath);
+						if (stat.isDirectory()) {
+							// For directories, use recursive copy
+							cpSync(oldFilePath, newFilePath, { recursive: true });
+							rmSync(oldFilePath, { recursive: true, force: true });
+						} else {
+							// For files, read and write
+							const data = readFileSync(oldFilePath);
+							writeFileSync(newFilePath, data);
+							unlinkSync(oldFilePath);
+						}
+						console.log(`[Stack] Copied file (cross-fs): ${oldFilePath} -> ${newFilePath}`);
+					} else {
+						throw renameErr;
+					}
+				}
+			}
+
+			// Remove old directory if it's now empty
+			try {
+				const remaining = readdirSync(options.moveFromDir);
+				if (remaining.length === 0) {
+					rmSync(options.moveFromDir, { recursive: true, force: true });
+					console.log(`[Stack] Removed empty old directory: ${options.moveFromDir}`);
+				}
+			} catch {
+				// Ignore errors when checking/removing old directory
+			}
+		} catch (err: any) {
+			console.warn(`[Stack] Failed to move files from ${options.moveFromDir} to ${newDir}: ${err.message}`);
+			// Continue with save even if move fails - new files will be written anyway
+		}
+	}
+
+	// If a custom composePath is being set (new or update), save it to the database
+	if (options?.composePath || options?.envPath !== undefined) {
+		await upsertStackSource({
+			stackName: name,
+			environmentId: envId ?? null,
+			sourceType: 'internal',
+			composePath: options?.composePath || source?.composePath || null,
+			envPath: options?.envPath !== undefined ? options.envPath : (source?.envPath ?? null)
+		});
+	}
+
+	if (composePath) {
+		// Write directly to the custom compose file path
+		// Ensure parent directory exists for custom paths
+		const parentDir = dirname(composePath);
+		if (!existsSync(parentDir)) {
+			try {
+				mkdirSync(parentDir, { recursive: true });
+			} catch (err: any) {
+				return { success: false, error: `Failed to create directory for compose file: ${err.message}` };
+			}
+		}
+		try {
+			await Bun.write(composePath, content);
+			return { success: true };
+		} catch (err: any) {
+			return { success: false, error: `Failed to save compose file: ${err.message}` };
+		}
+	}
+
+	// For creates, use new path; for updates, find existing path first
+	let stackDir: string;
+	if (create) {
+		stackDir = await getStackDir(name, envId);
+	} else {
+		const existingDir = await findStackDir(name, envId);
+		if (!existingDir) {
+			return { success: false, error: `Stack "${name}" not found` };
+		}
+		stackDir = existingDir;
+	}
+
 	const composeFile = join(stackDir, 'docker-compose.yml');
 	const exists = existsSync(stackDir);
 
@@ -323,11 +635,6 @@ export async function saveStackComposeFile(
 		} catch (err: any) {
 			return { success: false, error: `Failed to create stack directory: ${err.message}` };
 		}
-	} else {
-		// Updating existing stack - must exist
-		if (!exists) {
-			return { success: false, error: `Stack "${name}" not found` };
-		}
 	}
 
 	try {
@@ -335,6 +642,68 @@ export async function saveStackComposeFile(
 		return { success: true };
 	} catch (err: any) {
 		return { success: false, error: `Failed to ${create ? 'create' : 'save'} compose file: ${err.message}` };
+	}
+}
+
+// =============================================================================
+// REGISTRY AUTHENTICATION
+// =============================================================================
+
+/**
+ * Login to all configured Docker registries before running compose commands.
+ * This ensures that `docker compose up` can pull images from private registries.
+ */
+async function loginToRegistries(dockerHost?: string, logPrefix = '[Stack]'): Promise<void> {
+	const { getRegistries } = await import('./db.js');
+	const registries = await getRegistries();
+
+	if (registries.length === 0) {
+		return;
+	}
+
+	const spawnEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+	if (dockerHost) {
+		spawnEnv.DOCKER_HOST = dockerHost;
+	}
+
+	for (const reg of registries) {
+		if (!reg.username || !reg.password) {
+			continue; // Skip registries without credentials
+		}
+
+		try {
+			// Extract registry host from URL
+			const url = new URL(reg.url);
+			const registryHost = url.host;
+
+			console.log(`${logPrefix} Logging into registry: ${registryHost}`);
+
+			const proc = Bun.spawn(
+				['docker', 'login', '-u', reg.username, '--password-stdin', registryHost],
+				{
+					env: spawnEnv,
+					stdin: 'pipe',
+					stdout: 'pipe',
+					stderr: 'pipe'
+				}
+			);
+
+			// Write password to stdin
+			const writer = proc.stdin.getWriter();
+			await writer.write(new TextEncoder().encode(reg.password));
+			await writer.close();
+
+			const exitCode = await proc.exited;
+
+			if (exitCode === 0) {
+				console.log(`${logPrefix} Successfully logged into ${registryHost}`);
+			} else {
+				const stderr = await new Response(proc.stderr).text();
+				console.error(`${logPrefix} Failed to login to ${registryHost}: ${stderr}`);
+			}
+		} catch (e) {
+			console.error(`${logPrefix} Error logging into registry ${reg.name}:`, e);
+		}
 	}
 }
 
@@ -364,11 +733,14 @@ async function executeLocalCompose(
 	envVars?: Record<string, string>,
 	secretVars?: Record<string, string>,
 	forceRecreate?: boolean,
-	removeVolumes?: boolean
+	removeVolumes?: boolean,
+	envId?: number | null
 ): Promise<StackOperationResult> {
 	const logPrefix = `[Stack:${stackName}]`;
-	const stacksDir = getStacksDir();
-	const stackDir = join(stacksDir, stackName);
+	// For operations that write (up), use getStackDir; for others, try to find existing first
+	const stackDir = operation === 'up'
+		? await getStackDir(stackName, envId)
+		: (await findStackDir(stackName, envId) || await getStackDir(stackName, envId));
 	mkdirSync(stackDir, { recursive: true });
 
 	const composeFile = join(stackDir, 'docker-compose.yml');
@@ -431,6 +803,11 @@ async function executeLocalCompose(
 	console.log(`${logPrefix} Env vars count:`, envVars ? Object.keys(envVars).length : 0);
 	if (envVars && Object.keys(envVars).length > 0) {
 		console.log(`${logPrefix} Env vars being injected (masked):`, JSON.stringify(maskSecrets(envVars), null, 2));
+	}
+
+	// Login to registries before pulling images
+	if (operation === 'up' || operation === 'pull') {
+		await loginToRegistries(dockerHost, logPrefix);
 	}
 
 	try {
@@ -577,6 +954,20 @@ async function executeComposeViaHawser(
 			}
 		}
 
+		// Fetch registry credentials for Hawser to use for docker login
+		const { getRegistries } = await import('./db.js');
+		const allRegistries = await getRegistries();
+		const registries = allRegistries
+			.filter(r => r.username && r.password)
+			.map(r => ({
+				url: r.url,
+				username: r.username!,
+				password: r.password!
+			}));
+		if (registries.length > 0) {
+			console.log(`${logPrefix} Sending ${registries.length} registry credentials to Hawser`);
+		}
+
 		const body = JSON.stringify({
 			operation,
 			projectName: stackName,
@@ -584,7 +975,8 @@ async function executeComposeViaHawser(
 			envVars: allEnvVars, // All vars (including secrets) - Hawser injects via shell env
 			files, // Files including .env (secrets NOT in .env file)
 			forceRecreate: forceRecreate || false,
-			removeVolumes: removeVolumes || false
+			removeVolumes: removeVolumes || false,
+			registries // Registry credentials for docker login
 		});
 
 		console.log(`${logPrefix} Sending request to Hawser agent...`);
@@ -665,7 +1057,8 @@ async function executeComposeCommand(
 			envVars,
 			secretVars,
 			forceRecreate,
-			removeVolumes
+			removeVolumes,
+			envId
 		);
 	}
 
@@ -695,7 +1088,8 @@ async function executeComposeCommand(
 				envVars,
 				secretVars,
 				forceRecreate,
-				removeVolumes
+				removeVolumes,
+				envId
 			);
 		}
 
@@ -709,7 +1103,8 @@ async function executeComposeCommand(
 				envVars,
 				secretVars,
 				forceRecreate,
-				removeVolumes
+				removeVolumes,
+				envId
 			);
 	}
 }
@@ -807,6 +1202,37 @@ async function getStackContainers(stackName: string, envId?: number | null): Pro
 }
 
 /**
+ * Extract path hints from Docker container labels for a stack.
+ * Docker Compose adds labels like:
+ * - com.docker.compose.project.working_dir: /path/to/stack
+ * - com.docker.compose.project.config_files: /path/to/docker-compose.yml[,...]
+ */
+export async function getStackPathHints(
+	stackName: string,
+	envId?: number | null
+): Promise<{
+	workingDir: string | null;
+	configFiles: string[] | null;
+}> {
+	const containers = await getStackContainers(stackName, envId);
+
+	if (containers.length === 0) {
+		return { workingDir: null, configFiles: null };
+	}
+
+	// Get labels from first container (all containers in stack have same project labels)
+	const labels = containers[0].labels || {};
+
+	const workingDir = labels['com.docker.compose.project.working_dir'] || null;
+	const configFilesRaw = labels['com.docker.compose.project.config_files'] || null;
+
+	// Config files can be comma-separated if multiple compose files were used
+	const configFiles = configFilesRaw ? configFilesRaw.split(',').map((f: string) => f.trim()) : null;
+
+	return { workingDir, configFiles };
+}
+
+/**
  * Helper to perform container-based operations for external stacks
  * Used as fallback when no compose file exists.
  * Uses Promise.allSettled for parallel execution.
@@ -878,12 +1304,25 @@ async function withContainerFallback(
 // =============================================================================
 
 /**
- * Ensure we have a compose file for operations, throw appropriate error if not.
+ * Result type for requireComposeFile - can indicate stack needs file location
+ */
+export interface RequireComposeResult {
+	success: boolean;
+	content?: string;
+	envVars?: Record<string, string>;
+	secretVars?: Record<string, string>;
+	needsFileLocation?: boolean;
+	error?: string;
+}
+
+/**
+ * Get compose file and env vars for stack operations.
  *
  * Returns:
  * - content: The compose file content
  * - envVars: Non-secret variables (from .env file, with DB fallback)
  * - secretVars: Secret variables (from DB only, for shell injection)
+ * - needsFileLocation: true if stack needs user to specify file paths
  *
  * SECURITY: Secrets are NEVER written to .env files. They are stored in the database
  * and injected via shell environment variables at runtime.
@@ -891,16 +1330,22 @@ async function withContainerFallback(
 async function requireComposeFile(
 	stackName: string,
 	envId?: number | null
-): Promise<{ content: string; envVars: Record<string, string>; secretVars: Record<string, string> }> {
-	const composeResult = await getStackComposeFile(stackName);
+): Promise<RequireComposeResult> {
+	const composeResult = await getStackComposeFile(stackName, envId);
 
+	// If compose file not found, return info about what's needed
 	if (!composeResult.success) {
-		// Check if this is an external stack
-		const source = await getStackSource(stackName, envId);
-		if (!source || source.sourceType === 'external') {
-			throw new ExternalStackError(stackName);
+		if (composeResult.needsFileLocation) {
+			return {
+				success: false,
+				needsFileLocation: true,
+				error: composeResult.error
+			};
 		}
-		throw new ComposeFileNotFoundError(stackName);
+		return {
+			success: false,
+			error: composeResult.error || `Compose file not found for stack "${stackName}"`
+		};
 	}
 
 	// Get SECRET variables from database (for shell injection at runtime)
@@ -910,12 +1355,26 @@ async function requireComposeFile(
 	// Get non-secret variables from database (for backward compatibility)
 	const dbNonSecretVars = await getNonSecretEnvVarsAsRecord(stackName, envId);
 
-	// Read non-secret vars from .env file (user can edit this file manually)
-	const stackDir = join(getStacksDir(), stackName);
-	const envFilePath = join(stackDir, '.env');
+	// Read non-secret vars from .env file
+	// For stacks with custom path, use the env path if set (and not empty string which means "no env file")
+	// Otherwise, use the .env file in the stack directory
+	let envFilePath: string | null = null;
+
+	if (composeResult.composePath && composeResult.envPath) {
+		// Custom compose path with explicit env path
+		envFilePath = composeResult.envPath;
+	} else if (composeResult.composePath && composeResult.envPath === '') {
+		// Custom compose path with explicit "no env file" - don't read any file
+		envFilePath = null;
+	} else {
+		// Default location - look for .env in stack directory
+		const stackDir = composeResult.stackDir || await findStackDir(stackName, envId) || await getStackDir(stackName, envId);
+		envFilePath = join(stackDir, '.env');
+	}
+
 	let fileEnvVars: Record<string, string> = {};
 
-	if (existsSync(envFilePath)) {
+	if (envFilePath && existsSync(envFilePath)) {
 		try {
 			const content = await Bun.file(envFilePath).text();
 			for (const line of content.split('\n')) {
@@ -941,85 +1400,80 @@ async function requireComposeFile(
 	// This ensures external edits to .env are respected during deployment
 	const envVars = { ...dbNonSecretVars, ...fileEnvVars };
 
-	return { content: composeResult.content!, envVars, secretVars };
+	return { success: true, content: composeResult.content!, envVars, secretVars };
 }
 
 /**
  * Start a stack using docker compose up
- * Falls back to individual container start for external stacks
+ * Falls back to individual container start for stacks without compose files
  */
 export async function startStack(
 	stackName: string,
 	envId?: number | null
 ): Promise<StackOperationResult> {
-	try {
-		const { content, envVars, secretVars } = await requireComposeFile(stackName, envId);
-		return executeComposeCommand('up', { stackName, envId }, content, envVars, secretVars);
-	} catch (err) {
-		if (err instanceof ExternalStackError) {
-			return withContainerFallback(stackName, envId, 'start');
-		}
-		throw err;
+	const result = await requireComposeFile(stackName, envId);
+
+	if (!result.success) {
+		// No compose file - fall back to container-based operations
+		return withContainerFallback(stackName, envId, 'start');
 	}
+
+	return executeComposeCommand('up', { stackName, envId }, result.content!, result.envVars, result.secretVars);
 }
 
 /**
  * Stop a stack using docker compose stop
- * Falls back to individual container stop for external stacks
+ * Falls back to individual container stop for stacks without compose files
  */
 export async function stopStack(
 	stackName: string,
 	envId?: number | null
 ): Promise<StackOperationResult> {
-	try {
-		const { content, envVars, secretVars } = await requireComposeFile(stackName, envId);
-		return executeComposeCommand('stop', { stackName, envId }, content, envVars, secretVars);
-	} catch (err) {
-		if (err instanceof ExternalStackError) {
-			return withContainerFallback(stackName, envId, 'stop');
-		}
-		throw err;
+	const result = await requireComposeFile(stackName, envId);
+
+	if (!result.success) {
+		// No compose file - fall back to container-based operations
+		return withContainerFallback(stackName, envId, 'stop');
 	}
+
+	return executeComposeCommand('stop', { stackName, envId }, result.content!, result.envVars, result.secretVars);
 }
 
 /**
  * Restart a stack using docker compose restart
- * Falls back to individual container restart for external stacks
+ * Falls back to individual container restart for stacks without compose files
  */
 export async function restartStack(
 	stackName: string,
 	envId?: number | null
 ): Promise<StackOperationResult> {
-	try {
-		const { content, envVars, secretVars } = await requireComposeFile(stackName, envId);
-		return executeComposeCommand('restart', { stackName, envId }, content, envVars, secretVars);
-	} catch (err) {
-		if (err instanceof ExternalStackError) {
-			return withContainerFallback(stackName, envId, 'restart');
-		}
-		throw err;
+	const result = await requireComposeFile(stackName, envId);
+
+	if (!result.success) {
+		// No compose file - fall back to container-based operations
+		return withContainerFallback(stackName, envId, 'restart');
 	}
+
+	return executeComposeCommand('restart', { stackName, envId }, result.content!, result.envVars, result.secretVars);
 }
 
 /**
  * Down a stack using docker compose down (removes containers, keeps files)
- * For external stacks, this is equivalent to stop (no compose file to "down")
+ * For stacks without compose files, this is equivalent to stop
  */
 export async function downStack(
 	stackName: string,
 	envId?: number | null,
 	removeVolumes = false
 ): Promise<StackOperationResult> {
-	try {
-		const { content, envVars, secretVars } = await requireComposeFile(stackName, envId);
-		return executeComposeCommand('down', { stackName, envId, removeVolumes }, content, envVars, secretVars);
-	} catch (err) {
-		if (err instanceof ExternalStackError) {
-			// For external stacks, down is the same as stop (no compose file to tear down)
-			return withContainerFallback(stackName, envId, 'stop');
-		}
-		throw err;
+	const result = await requireComposeFile(stackName, envId);
+
+	if (!result.success) {
+		// No compose file - down is the same as stop
+		return withContainerFallback(stackName, envId, 'stop');
 	}
+
+	return executeComposeCommand('down', { stackName, envId, removeVolumes }, result.content!, result.envVars, result.secretVars);
 }
 
 /**
@@ -1080,8 +1534,7 @@ export async function removeStack(
 		const cleanupErrors: string[] = [];
 
 		// Delete compose file and directory
-		const stacksDir = getStacksDir();
-		const stackDir = join(stacksDir, stackName);
+		const stackDir = await findStackDir(stackName, envId) || await getStackDir(stackName, envId);
 		if (existsSync(stackDir)) {
 			try {
 				rmSync(stackDir, { recursive: true, force: true });
@@ -1166,19 +1619,19 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 		console.log(`${logPrefix} Env file vars (masked):`, JSON.stringify(maskSecrets(envFileVars), null, 2));
 	}
 
-	// Validate stack name
-	if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+	// Validate stack name - Docker Compose requires lowercase alphanumeric, hyphens, underscores
+	// Must also start with a letter or number
+	if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) {
 		console.log(`${logPrefix} ERROR: Invalid stack name format`);
 		return {
 			success: false,
 			output: '',
-			error: 'Stack name can only contain letters, numbers, hyphens, and underscores'
+			error: 'Stack name must be lowercase, start with a letter or number, and contain only letters, numbers, hyphens, and underscores'
 		};
 	}
 
 	return withStackLock(name, async () => {
-		const stacksDir = getStacksDir();
-		const stackDir = join(stacksDir, name);
+		const stackDir = await getStackDir(name, envId);
 
 		// Read all files from source directory if provided (for Hawser deployments)
 		let stackFiles: Record<string, string> | undefined;
@@ -1248,9 +1701,16 @@ export async function pullStackImages(
 	stackName: string,
 	envId?: number | null
 ): Promise<{ success: boolean; output?: string; error?: string }> {
-	const { content, envVars, secretVars } = await requireComposeFile(stackName, envId);
+	const result = await requireComposeFile(stackName, envId);
 
-	return executeComposeCommand('pull', { stackName, envId }, content, envVars, secretVars);
+	if (!result.success) {
+		return {
+			success: false,
+			error: result.error || 'Compose file not found'
+		};
+	}
+
+	return executeComposeCommand('pull', { stackName, envId }, result.content!, result.envVars, result.secretVars);
 }
 
 // =============================================================================
@@ -1279,10 +1739,19 @@ export async function saveStackEnvVarsToDb(
  */
 export async function writeStackEnvFile(
 	stackName: string,
-	variables: { key: string; value: string; isSecret?: boolean }[]
+	variables: { key: string; value: string; isSecret?: boolean }[],
+	envId?: number | null,
+	customEnvPath?: string
 ): Promise<void> {
-	const stacksDir = getStacksDir();
-	const envFilePath = join(stacksDir, stackName, '.env');
+	const envFilePath = customEnvPath
+		? customEnvPath
+		: join(await findStackDir(stackName, envId) || await getStackDir(stackName, envId), '.env');
+
+	// Ensure parent directory exists
+	const dir = dirname(envFilePath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
+	}
 
 	// SECURITY: Only write non-secret variables to .env file
 	// Secrets are stored in DB and injected via shell environment at runtime
@@ -1302,17 +1771,20 @@ export async function writeStackEnvFile(
  */
 export async function writeRawStackEnvFile(
 	stackName: string,
-	rawContent: string
+	rawContent: string,
+	envId?: number | null,
+	customEnvPath?: string
 ): Promise<void> {
-	const stacksDir = getStacksDir();
-	const stackDir = join(stacksDir, stackName);
+	const envFilePath = customEnvPath
+		? customEnvPath
+		: join(await findStackDir(stackName, envId) || await getStackDir(stackName, envId), '.env');
 
-	// Ensure stack directory exists
-	if (!existsSync(stackDir)) {
-		mkdirSync(stackDir, { recursive: true });
+	// Ensure parent directory exists
+	const dir = dirname(envFilePath);
+	if (!existsSync(dir)) {
+		mkdirSync(dir, { recursive: true });
 	}
 
-	const envFilePath = join(stackDir, '.env');
 	await Bun.write(envFilePath, rawContent);
 }
 
@@ -1329,12 +1801,13 @@ export async function writeRawStackEnvFile(
 export async function saveStackEnvVars(
 	stackName: string,
 	variables: { key: string; value: string; isSecret?: boolean }[],
-	envId?: number | null
+	envId?: number | null,
+	customEnvPath?: string
 ): Promise<void> {
 	// Save to database for secret tracking
 	await saveStackEnvVarsToDb(stackName, variables, envId);
 	// Write .env file to disk for Docker Compose
-	await writeStackEnvFile(stackName, variables);
+	await writeStackEnvFile(stackName, variables, envId, customEnvPath);
 }
 
 // =============================================================================

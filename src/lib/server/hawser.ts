@@ -9,6 +9,8 @@ import { db, hawserTokens, environments, eq } from './db/drizzle.js';
 import { logContainerEvent, saveHostMetric, type ContainerEventAction } from './db.js';
 import { containerEventEmitter } from './event-collector.js';
 import { sendEnvironmentNotification } from './notifications.js';
+import { secureGetRandomValues, secureRandomUUID } from './crypto-fallback.js';
+import { hashPassword, verifyPassword } from './auth.js';
 
 // Protocol constants
 export const HAWSER_PROTOCOL_VERSION = '1.0';
@@ -243,7 +245,7 @@ export async function validateHawserToken(
 	// Check each token (tokens are hashed)
 	for (const t of tokens) {
 		try {
-			const isValid = await Bun.password.verify(token, t.token);
+			const isValid = await verifyPassword(token, t.token);
 			if (isValid) {
 				// Update last used timestamp
 				await db
@@ -292,16 +294,12 @@ export async function generateHawserToken(
 	} else {
 		// Generate a secure random token (32 bytes = 256 bits)
 		const tokenBytes = new Uint8Array(32);
-		crypto.getRandomValues(tokenBytes);
+		secureGetRandomValues(tokenBytes);
 		token = Buffer.from(tokenBytes).toString('base64url');
 	}
 
-	// Hash the token for storage (using Bun's built-in Argon2id)
-	const hashedToken = await Bun.password.hash(token, {
-		algorithm: 'argon2id',
-		memoryCost: 19456,
-		timeCost: 2
-	});
+	// Hash the token for storage (using Argon2id)
+	const hashedToken = await hashPassword(token);
 
 	// Get prefix for identification
 	const tokenPrefix = token.substring(0, 8);
@@ -477,7 +475,7 @@ export async function sendEdgeRequest(
 		throw new Error('Edge agent not connected');
 	}
 
-	const requestId = crypto.randomUUID();
+	const requestId = secureRandomUUID();
 
 	return new Promise((resolve, reject) => {
 		const timeoutHandle = setTimeout(() => {
@@ -614,7 +612,7 @@ export function sendEdgeStreamRequest(
 		return { requestId: '', cancel: () => {} };
 	}
 
-	const requestId = crypto.randomUUID();
+	const requestId = secureRandomUUID();
 
 	// Initialize pendingStreamRequests if not present (can happen in dev mode due to HMR)
 	if (!connection.pendingStreamRequests) {

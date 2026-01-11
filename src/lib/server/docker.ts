@@ -469,13 +469,16 @@ export async function dockerFetch(
 				streaming ? 300000 : 30000 // 5 min for streaming, 30s for normal requests
 			);
 			const elapsed = Date.now() - startTime;
-			if (elapsed > 5000) {
+			// Only warn for slow requests, but skip /stats which is expected to be slow (5-10s)
+			if (elapsed > 5000 && !path.includes('/stats')) {
 				console.warn(`[Docker] Edge env ${config.environmentId}: ${method} ${path} took ${elapsed}ms`);
 			}
 			return edgeResponseToResponse(edgeResponse);
-		} catch (error) {
+		} catch (error: any) {
 			const elapsed = Date.now() - startTime;
-			console.error(`[Docker] Edge env ${config.environmentId}: ${method} ${path} failed after ${elapsed}ms:`, error);
+			// Log error message only, not full stack trace
+			const msg = error?.message || String(error);
+			console.error(`[Docker] Edge env ${config.environmentId}: ${method} ${path} failed after ${elapsed}ms: ${msg}`);
 			throw DockerConnectionError.fromError(error);
 		}
 	}
@@ -491,13 +494,16 @@ export async function dockerFetch(
 				...bunOptions
 			});
 			const elapsed = Date.now() - startTime;
-			if (elapsed > 5000) {
+			// Only warn for slow requests, but skip /stats which is expected to be slow (5-10s)
+			if (elapsed > 5000 && !path.includes('/stats')) {
 				console.warn(`[Docker] Socket: ${method} ${path} took ${elapsed}ms`);
 			}
 			return response;
-		} catch (error) {
+		} catch (error: any) {
 			const elapsed = Date.now() - startTime;
-			console.error(`[Docker] Socket: ${method} ${path} failed after ${elapsed}ms:`, error);
+			// Log error message only, not full stack trace
+			const msg = error?.message || String(error);
+			console.error(`[Docker] Socket: ${method} ${path} failed after ${elapsed}ms: ${msg}`);
 			throw DockerConnectionError.fromError(error);
 		}
 	} else {
@@ -516,21 +522,30 @@ export async function dockerFetch(
 		}
 
 		// For HTTPS with TLS certificates, we need to configure TLS
-		// IMPORTANT: Bun requires certificates as Buffer objects, not strings
+		// Pass certificate strings directly to Bun's fetch - no temp files needed
 		if (config.type === 'https') {
 			const tlsOptions: Record<string, unknown> = {};
 
-			// CA certificate - must be array of Buffers for Bun
+			// DISABLE TLS SESSION CACHING: Bun reuses TLS sessions across different hosts,
+			// which causes client certificate mismatches in mTLS scenarios. By setting
+			// sessionTimeout to 0, we force a fresh TLS handshake for every connection.
+			tlsOptions.sessionTimeout = 0;
+
+			// Set explicit servername for SNI - helps isolate TLS contexts per host
+			tlsOptions.servername = config.host;
+
+			// Load CA certificate (just this environment's CA, not composite)
+			// The sessionTimeout=0 should prevent session reuse across hosts
 			if (config.ca) {
-				tlsOptions.ca = [Buffer.from(config.ca)];
+				tlsOptions.ca = [config.ca];
 			}
 
-			// Client certificate and key for mTLS - must be Buffers
+			// Client cert and key for mTLS authentication
 			if (config.cert) {
-				tlsOptions.cert = Buffer.from(config.cert);
+				tlsOptions.cert = [config.cert];
 			}
 			if (config.key) {
-				tlsOptions.key = Buffer.from(config.key);
+				tlsOptions.key = config.key;
 			}
 
 			// Skip verification (self-signed without CA)
@@ -541,8 +556,27 @@ export async function dockerFetch(
 			}
 
 			if (Object.keys(tlsOptions).length > 0) {
-				// @ts-ignore - Bun supports tls options with Buffer certs
+				// @ts-ignore - Bun supports tls options with string certs
 				finalOptions.tls = tlsOptions;
+				// Force new connection for each request to prevent Bun from reusing
+				// a TLS session with wrong client certificates (pool key doesn't include certs)
+				// @ts-ignore - Bun supports keepalive option
+				finalOptions.keepalive = false;
+			}
+
+			// Explicitly close connection to prevent TLS session reuse issues
+			// But only for non-streaming requests (logs, events, exec need keep-alive)
+			if (!streaming) {
+				finalOptions.headers = {
+					...finalOptions.headers,
+					'Connection': 'close'
+				};
+			}
+
+			// Optional verbose TLS debugging
+			if (process.env.DEBUG_TLS) {
+				// @ts-ignore - Bun-specific verbose option
+				finalOptions.verbose = true;
 			}
 		}
 
@@ -550,13 +584,16 @@ export async function dockerFetch(
 		try {
 			const response = await fetch(url, { ...finalOptions, ...bunOptions });
 			const elapsed = Date.now() - startTime;
-			if (elapsed > 5000) {
+			// Only warn for slow requests, but skip /stats which is expected to be slow (5-10s)
+			if (elapsed > 5000 && !path.includes('/stats')) {
 				console.warn(`[Docker] ${config.connectionType || 'direct'} ${config.host}: ${method} ${path} took ${elapsed}ms`);
 			}
 			return response;
-		} catch (error) {
+		} catch (error: any) {
 			const elapsed = Date.now() - startTime;
-			console.error(`[Docker] ${config.connectionType || 'direct'} ${config.host}: ${method} ${path} failed after ${elapsed}ms:`, error);
+			// Log error message only, not full stack trace
+			const msg = error?.message || String(error);
+			console.error(`[Docker] ${config.connectionType || 'direct'} ${config.host}: ${method} ${path} failed after ${elapsed}ms: ${msg}`);
 			throw DockerConnectionError.fromError(error);
 		}
 	}
@@ -994,12 +1031,31 @@ export async function updateContainer(id: string, options: CreateContainerOption
 
 // Image operations
 export async function listImages(envId?: number | null): Promise<ImageInfo[]> {
-	const images = await dockerJsonRequest<any[]>('/images/json', {}, envId);
+	// Fetch images and containers in parallel
+	const [images, containers] = await Promise.all([
+		dockerJsonRequest<any[]>('/images/json', {}, envId),
+		dockerJsonRequest<any[]>('/containers/json?all=true', {}, envId).catch(() => [] as any[])
+	]);
+
+	// Build a map of imageId -> container count
+	// Docker may return -1 for Containers field on some hosts, so we compute it ourselves
+	const imageContainerCount = new Map<string, number>();
+	for (const container of containers) {
+		const imageId = container.ImageID || container.Image;
+		if (imageId) {
+			imageContainerCount.set(imageId, (imageContainerCount.get(imageId) || 0) + 1);
+		}
+	}
+
 	return images.map((image) => ({
 		id: image.Id,
+		repoTags: image.RepoTags || [],
 		tags: image.RepoTags || [],
 		size: image.Size,
-		created: image.Created
+		virtualSize: image.VirtualSize || image.Size,
+		created: image.Created,
+		labels: image.Labels || {},
+		containers: imageContainerCount.get(image.Id) || 0
 	}));
 }
 
@@ -1943,7 +1999,10 @@ export async function pruneContainers(envId?: number | null) {
 }
 
 export async function pruneImages(dangling = true, envId?: number | null) {
-	const filters = dangling ? '{"dangling":["true"]}' : '{}';
+	// dangling=true: only remove untagged images (default Docker behavior)
+	// dangling=false: remove ALL unused images including tagged ones
+	// Docker API quirk: to remove all unused, we pass dangling=false filter
+	const filters = dangling ? '{"dangling":["true"]}' : '{"dangling":["false"]}';
 	return dockerJsonRequest(`/images/prune?filters=${encodeURIComponent(filters)}`, { method: 'POST' }, envId);
 }
 
@@ -2042,18 +2101,30 @@ export async function execInContainer(
 }
 
 // Get Docker events as a stream (for SSE)
+// For streaming mode: call with just filters
+// For polling mode: call with since and until to get a finite window of events
 export async function getDockerEvents(
 	filters: Record<string, string[]>,
-	envId?: number | null
+	envId?: number | null,
+	options?: { since?: string; until?: string }
 ): Promise<ReadableStream<Uint8Array> | null> {
 	const filterJson = JSON.stringify(filters);
+
+	// Build query string with optional since/until for polling mode
+	let queryString = `filters=${encodeURIComponent(filterJson)}`;
+	if (options?.since) {
+		queryString += `&since=${encodeURIComponent(options.since)}`;
+	}
+	if (options?.until) {
+		queryString += `&until=${encodeURIComponent(options.until)}`;
+	}
 
 	try {
 		// Note: We use streaming: true to disable Bun's idle timeout for this long-lived connection.
 		// The Docker events API keeps the connection open indefinitely, sending events as they occur.
 		// Without streaming: true, Bun would terminate the connection after ~5 seconds of inactivity.
 		const response = await dockerFetch(
-			`/events?filters=${encodeURIComponent(filterJson)}`,
+			`/events?${queryString}`,
 			{ streaming: true },
 			envId
 		);
@@ -3114,8 +3185,12 @@ async function cleanupStaleVolumeHelpersForEnv(envId?: number | null): Promise<n
 		}
 
 		return removed;
-	} catch (err) {
-		console.warn('Failed to query stale volume helpers:', err);
+	} catch (err: any) {
+		// Don't spam logs for expected failures (e.g., edge agent offline)
+		const msg = err?.message || String(err);
+		if (!msg.includes('not connected') && !msg.includes('offline')) {
+			console.warn('Failed to query stale volume helpers:', msg);
+		}
 		return 0;
 	}
 }

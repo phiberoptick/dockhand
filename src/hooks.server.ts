@@ -4,6 +4,7 @@ import { startScheduler } from '$lib/server/scheduler';
 import { isAuthEnabled, validateSession } from '$lib/server/auth';
 import { setServerStartTime } from '$lib/server/uptime';
 import { checkLicenseExpiry, getHostname } from '$lib/server/license';
+import { initCryptoFallback } from '$lib/server/crypto-fallback';
 import type { HandleServerError, Handle } from '@sveltejs/kit';
 import { redirect } from '@sveltejs/kit';
 
@@ -20,6 +21,9 @@ let initialized = false;
 
 if (!initialized) {
 	try {
+		// Initialize crypto fallback first (detects old kernels and logs status)
+		initCryptoFallback();
+
 		setServerStartTime(); // Track when server started
 		initDatabase();
 		// Log hostname for license validation (set by entrypoint in Docker, or os.hostname() outside)
@@ -68,7 +72,8 @@ const PUBLIC_PATHS = [
 	'/api/auth/oidc',
 	'/api/license',
 	'/api/changelog',
-	'/api/dependencies'
+	'/api/dependencies',
+	'/api/health'
 ];
 
 // Check if path is public

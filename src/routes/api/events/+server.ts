@@ -1,5 +1,5 @@
 import type { RequestHandler } from './$types';
-import { getDockerEvents } from '$lib/server/docker';
+import { getDockerEvents, EnvironmentNotFoundError } from '$lib/server/docker';
 import { getEnvironment } from '$lib/server/db';
 
 export const GET: RequestHandler = async ({ url }) => {
@@ -118,8 +118,13 @@ export const GET: RequestHandler = async ({ url }) => {
 
 				processEvents();
 			} catch (error: any) {
-				console.error('Failed to connect to Docker events:', error);
-				sendEvent('error', { message: error.message || 'Failed to connect to Docker' });
+				if (error instanceof EnvironmentNotFoundError) {
+					// Expected error when environment doesn't exist - don't spam logs
+					sendEvent('error', { message: 'Environment not found' });
+				} else {
+					console.error('Failed to connect to Docker events:', error);
+					sendEvent('error', { message: error.message || 'Failed to connect to Docker' });
+				}
 				clearInterval(heartbeatInterval);
 				controller.close();
 			}

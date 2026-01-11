@@ -12,7 +12,6 @@ import {
 	listContainers,
 	listImages,
 	listNetworks,
-	getDockerInfo,
 	getContainerStats,
 	getDiskUsage
 } from '$lib/server/docker';
@@ -95,6 +94,28 @@ function calculateCpuPercent(stats: any): number {
 	return 0;
 }
 
+/**
+ * Calculate memory usage the same way Docker CLI does.
+ * Docker subtracts cache (inactive_file) from total usage to show actual memory consumption.
+ * - cgroup v2: subtract inactive_file from stats
+ * - cgroup v1: subtract total_inactive_file from stats
+ * See: https://docs.docker.com/engine/containers/runmetrics/
+ */
+function calculateMemoryUsage(memoryStats: any): number {
+	const usage = memoryStats?.usage || 0;
+	const stats = memoryStats?.stats || {};
+
+	// cgroup v2 uses 'inactive_file', cgroup v1 uses 'total_inactive_file'
+	const cache = stats.inactive_file ?? stats.total_inactive_file ?? 0;
+
+	// Only subtract cache if it's less than usage (sanity check)
+	if (cache > 0 && cache < usage) {
+		return usage - cache;
+	}
+
+	return usage;
+}
+
 // Progressive stats loading - returns stats object and emits partial updates via callback
 async function getEnvironmentStatsProgressive(
 	env: any,
@@ -150,23 +171,9 @@ async function getEnvironmentStatsProgressive(
 			envStats.updateCheckAutoUpdate = updateCheckSettings.autoUpdate;
 		}
 
-		// Check if Docker is accessible (with 5 second timeout)
-		const dockerInfo = await withTimeout(getDockerInfo(env.id), 5000, null);
-		if (!dockerInfo) {
-			envStats.error = 'Connection timeout or Docker not accessible';
-			envStats.loading = undefined; // Clear loading states on error
-			// Send offline status to client
-			onPartialUpdate({
-				id: env.id,
-				online: false,
-				error: envStats.error,
-				loading: undefined
-			});
-			return envStats;
-		}
-		envStats.online = true;
-
 		// Get all database stats in parallel for better performance
+		// NOTE: We do NOT block on getDockerInfo() here - slow environments would block all others
+		// Instead, we determine online status from whether listContainers succeeds
 		const [latestMetrics, eventStats, recentEventsResult, metricsHistory] = await Promise.all([
 			getLatestHostMetrics(env.id),
 			getContainerEventStats(env.id),
@@ -204,10 +211,9 @@ async function getEnvironmentStatsProgressive(
 			}));
 		}
 
-		// Send initial update with DB data and online status
+		// Send initial update with DB data (online status determined later by Docker API success)
 		onPartialUpdate({
 			id: env.id,
-			online: true,
 			metrics: envStats.metrics,
 			events: envStats.events,
 			recentEvents: envStats.recentEvents,
@@ -223,9 +229,22 @@ async function getEnvironmentStatsProgressive(
 			return size && size > 0 ? size : 0;
 		};
 
-		// PHASE 1: Containers (usually fast)
-		const containersPromise = withTimeout(listContainers(true, env.id).catch(() => []), 10000, [])
+		// Track if Docker API is accessible - determined by listContainers success
+		let dockerApiAccessible = false;
+		let dockerApiError: string | null = null;
+
+		// PHASE 1: Containers (usually fast) - this determines online status
+		// Use 10s timeout - this is the critical path that determines if env is online
+		const containersPromise = withTimeout(listContainers(true, env.id), 10000, null)
 			.then(async (containers) => {
+				// Timeout returns null
+				if (containers === null) {
+					throw new Error('Connection timeout');
+				}
+				// If we got here, Docker API is accessible
+				dockerApiAccessible = true;
+				envStats.online = true;
+
 				envStats.containers.total = containers.length;
 				envStats.containers.running = containers.filter((c: any) => c.state === 'running').length;
 				envStats.containers.stopped = containers.filter((c: any) => c.state === 'exited').length;
@@ -236,11 +255,39 @@ async function getEnvironmentStatsProgressive(
 
 				onPartialUpdate({
 					id: env.id,
+					online: true,
 					containers: { ...envStats.containers },
 					loading: { ...envStats.loading! }
 				});
 
 				return containers;
+			})
+			.catch((error) => {
+				// Docker API failed - mark as offline
+				dockerApiAccessible = false;
+				const errorStr = String(error);
+				if (errorStr.includes('not connected') || errorStr.includes('Edge agent')) {
+					dockerApiError = 'Agent not connected';
+				} else if (errorStr.includes('FailedToOpenSocket') || errorStr.includes('ECONNREFUSED')) {
+					dockerApiError = 'Docker socket not accessible';
+				} else if (errorStr.includes('ECONNRESET') || errorStr.includes('connection was closed')) {
+					dockerApiError = 'Connection lost';
+				} else if (errorStr.includes('timeout') || errorStr.includes('Timeout')) {
+					dockerApiError = 'Connection timeout';
+				} else {
+					dockerApiError = 'Connection error';
+				}
+				envStats.error = dockerApiError;
+				envStats.loading!.containers = false;
+
+				onPartialUpdate({
+					id: env.id,
+					online: false,
+					error: dockerApiError,
+					loading: { ...envStats.loading! }
+				});
+
+				return [] as any[];
 			});
 
 		// PHASE 2: Images, Networks, Stacks (medium speed) - run in parallel
@@ -339,7 +386,7 @@ async function getEnvironmentStatsProgressive(
 					if (!stats) return null;
 
 					const cpuPercent = calculateCpuPercent(stats);
-					const memoryUsage = stats.memory_stats?.usage || 0;
+					const memoryUsage = calculateMemoryUsage(stats.memory_stats);
 					const memoryLimit = stats.memory_stats?.limit || 1;
 					const memoryPercent = (memoryUsage / memoryLimit) * 100;
 

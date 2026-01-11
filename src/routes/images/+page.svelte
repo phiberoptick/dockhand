@@ -7,7 +7,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Select from '$lib/components/ui/select';
-	import { Trash2, Upload, RefreshCw, Play, Search, Layers, Server, ShieldCheck, CheckSquare, Square, Tag, Check, XCircle, Icon, AlertTriangle, X, Images, Copy, Download, ChevronRight, ChevronDown, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-svelte';
+	import { Trash2, Upload, RefreshCw, Play, Search, Layers, Server, ShieldCheck, CheckSquare, Square, Tag, Check, XCircle, Icon, AlertTriangle, X, Images, Copy, Download, ChevronRight, ChevronDown, Loader2, ArrowUp, ArrowDown, ArrowUpDown, CircleDashed } from 'lucide-svelte';
 	import { broom, whale } from '@lucide/lab';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
@@ -46,10 +46,12 @@
 			imageId: string;
 			size: number;
 			created: number;
+			containers: number;
 		}>;
 		totalSize: number;
 		latestCreated: number;
 		imageIds: Set<string>;
+		containers: number;
 	}
 
 	// Check if a registry is Docker Hub
@@ -115,6 +117,8 @@
 	// Prune state
 	let confirmPrune = $state(false);
 	let pruneStatus = $state<'idle' | 'pruning' | 'success' | 'error'>('idle');
+	let confirmPruneUnused = $state(false);
+	let pruneUnusedStatus = $state<'idle' | 'pruning' | 'success' | 'error'>('idle');
 
 	// Multi-select state
 	let selectedImages = $state<Set<string>>(new Set());
@@ -179,7 +183,8 @@
 						tags: [],
 						totalSize: 0,
 						latestCreated: 0,
-						imageIds: new Set()
+						imageIds: new Set(),
+						containers: 0
 					});
 				}
 				const group = groups.get(key)!;
@@ -188,11 +193,13 @@
 					fullRef: image.id,
 					imageId: image.id,
 					size: image.size,
-					created: image.created
+					created: image.created,
+					containers: image.containers
 				});
 				group.totalSize = Math.max(group.totalSize, image.size);
 				group.latestCreated = Math.max(group.latestCreated, image.created);
 				group.imageIds.add(image.id);
+				group.containers += image.containers;
 			} else {
 				for (const fullTag of image.tags) {
 					const colonIndex = fullTag.lastIndexOf(':');
@@ -205,7 +212,8 @@
 							tags: [],
 							totalSize: 0,
 							latestCreated: 0,
-							imageIds: new Set()
+							imageIds: new Set(),
+							containers: 0
 						});
 					}
 
@@ -217,11 +225,16 @@
 							fullRef: fullTag,
 							imageId: image.id,
 							size: image.size,
-							created: image.created
+							created: image.created,
+							containers: image.containers
 						});
 					}
 					group.totalSize = Math.max(group.totalSize, image.size);
 					group.latestCreated = Math.max(group.latestCreated, image.created);
+					// Only add containers count once per unique image ID
+					if (!group.imageIds.has(image.id)) {
+						group.containers += image.containers;
+					}
 					group.imageIds.add(image.id);
 				}
 			}
@@ -432,7 +445,7 @@
 			const response = await fetch(appendEnvParam('/api/prune/images', envId), { method: 'POST' });
 			if (response.ok) {
 				pruneStatus = 'success';
-				toast.success('Unused images pruned');
+				toast.success('Dangling images pruned');
 				await fetchImages();
 			} else {
 				pruneStatus = 'error';
@@ -443,6 +456,26 @@
 			toast.error('Failed to prune images');
 		}
 		pendingTimeouts.push(setTimeout(() => { pruneStatus = 'idle'; }, 3000));
+	}
+
+	async function pruneUnusedImages() {
+		pruneUnusedStatus = 'pruning';
+		confirmPruneUnused = false;
+		try {
+			const response = await fetch(appendEnvParam('/api/prune/images?dangling=false', envId), { method: 'POST' });
+			if (response.ok) {
+				pruneUnusedStatus = 'success';
+				toast.success('Unused images pruned');
+				await fetchImages();
+			} else {
+				pruneUnusedStatus = 'error';
+				toast.error('Failed to prune unused images');
+			}
+		} catch (error) {
+			pruneUnusedStatus = 'error';
+			toast.error('Failed to prune unused images');
+		}
+		pendingTimeouts.push(setTimeout(() => { pruneUnusedStatus = 'idle'; }, 3000));
 	}
 
 	async function removeImage(id: string, tagName: string) {
@@ -618,13 +651,16 @@
 				open={confirmPrune}
 				action="Prune"
 				itemType="dangling images"
-				title="Prune images"
+				title="Prune dangling images"
 				position="left"
 				onConfirm={pruneImages}
 				onOpenChange={(open) => confirmPrune = open}
 			>
 				{#snippet children({ open })}
-					<span class="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm bg-background shadow-xs border hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 {pruneStatus === 'pruning' ? 'opacity-50 pointer-events-none' : ''}">
+					<span
+						class="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm bg-background shadow-xs border hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 {pruneStatus === 'pruning' ? 'opacity-50 pointer-events-none' : ''}"
+						title="Remove untagged intermediate layers (dangling images)"
+					>
 						{#if pruneStatus === 'pruning'}
 							<RefreshCw class="w-3.5 h-3.5 animate-spin" />
 						{:else if pruneStatus === 'success'}
@@ -635,6 +671,33 @@
 							<Icon iconNode={broom} class="w-3.5 h-3.5" />
 						{/if}
 						Prune
+					</span>
+				{/snippet}
+			</ConfirmPopover>
+			<ConfirmPopover
+				open={confirmPruneUnused}
+				action="Prune"
+				itemType="all unused images"
+				title="Prune unused images"
+				position="left"
+				onConfirm={pruneUnusedImages}
+				onOpenChange={(open) => confirmPruneUnused = open}
+			>
+				{#snippet children({ open })}
+					<span
+						class="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm bg-background shadow-xs border hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 {pruneUnusedStatus === 'pruning' ? 'opacity-50 pointer-events-none' : ''}"
+						title="Remove ALL images not used by any container (including tagged images)"
+					>
+						{#if pruneUnusedStatus === 'pruning'}
+							<RefreshCw class="w-3.5 h-3.5 animate-spin" />
+						{:else if pruneUnusedStatus === 'success'}
+							<Check class="w-3.5 h-3.5 text-green-600" />
+						{:else if pruneUnusedStatus === 'error'}
+							<XCircle class="w-3.5 h-3.5 text-destructive" />
+						{:else}
+							<Icon iconNode={broom} class="w-3.5 h-3.5 text-amber-600" />
+						{/if}
+						Prune unused
 					</span>
 				{/snippet}
 			</ConfirmPopover>
@@ -785,6 +848,16 @@
 								{group.tags[0].tag}
 							</span>
 						{/if}
+						{#if group.containers === 0}
+							<Badge variant="outline" class="text-2xs px-1.5 py-0 border-amber-500/50 text-amber-600 dark:text-amber-400 shadow-[0_0_4px_rgba(245,158,11,0.4)]">
+								Unused
+							</Badge>
+						{:else if group.tags.length > 1 && group.tags.some(t => t.containers === 0)}
+							<Badge variant="outline" class="text-2xs px-1.5 py-0 border-amber-500/30 text-amber-600/70 dark:text-amber-400/70 shadow-[0_0_3px_rgba(245,158,11,0.25)]" title="Some tags are unused">
+								<CircleDashed class="w-2.5 h-2.5 mr-0.5" />
+								Some unused
+							</Badge>
+						{/if}
 					</div>
 				{:else if column.id === 'tags'}
 					<Badge variant="secondary" class="text-xs">
@@ -867,6 +940,22 @@
 								<span class="text-muted-foreground">{formatSize(tagInfo.size)}</span>
 							{:else if column.id === 'created'}
 								<span class="text-muted-foreground">{formatImageDate(tagInfo.created)}</span>
+							{:else if column.id === 'used'}
+								{#if tagInfo.containers > 0}
+									<a
+										href="/containers?image={encodeURIComponent(tagInfo.fullRef)}"
+										class="text-muted-foreground hover:text-foreground hover:underline"
+										title="View containers using this image"
+									>
+										{tagInfo.containers} container{tagInfo.containers === 1 ? '' : 's'}
+									</a>
+								{:else if tagInfo.containers === 0}
+									<Badge variant="outline" class="text-2xs px-1.5 py-0 border-amber-500/50 text-amber-600 dark:text-amber-400 shadow-[0_0_4px_rgba(245,158,11,0.4)]">
+										Unused
+									</Badge>
+								{:else}
+									<span class="text-muted-foreground/50">—</span>
+								{/if}
 							{:else if column.id === 'actions'}
 								<div class="flex items-center gap-1">
 									{#if $canAccess('images', 'inspect')}
@@ -930,7 +1019,7 @@
 										<Tag class="w-3 h-3 text-muted-foreground hover:text-foreground" />
 									</button>
 									{/if}
-									{#if $canAccess('images', 'remove')}
+									{#if $canAccess('images', 'remove') && tagInfo.containers === 0}
 									<div class="relative">
 										<ConfirmPopover
 											open={confirmDeleteId === tagInfo.fullRef}

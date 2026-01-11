@@ -35,12 +35,12 @@
 		id: number;
 		name: string;
 		description?: string;
-		env_vars?: { key: string; value: string }[];
+		envVars?: { key: string; value: string }[];
 		labels?: { key: string; value: string }[];
 		ports?: { hostPort: string; containerPort: string; protocol: string }[];
 		volumes?: { hostPath: string; containerPath: string; mode: string }[];
-		network_mode: string;
-		restart_policy: string;
+		networkMode: string;
+		restartPolicy: string;
 	}
 
 	interface DockerNetwork {
@@ -315,15 +315,15 @@
 		const configSet = configSets.find((c) => c.id === parseInt(configSetId));
 		if (!configSet) return;
 
-		if (configSet.env_vars && configSet.env_vars.length > 0) {
+		if (configSet.envVars && configSet.envVars.length > 0) {
 			if (mode === 'edit') {
 				// Merge mode for edit
 				const existingKeys = new Set(envVars.map(e => e.key).filter(k => k));
-				const newEnvVars = configSet.env_vars.filter(e => !existingKeys.has(e.key));
+				const newEnvVars = configSet.envVars.filter(e => !existingKeys.has(e.key));
 				envVars = [...envVars.filter(e => e.key), ...newEnvVars.map(e => ({ ...e }))];
 				if (envVars.length === 0) envVars = [{ key: '', value: '' }];
 			} else {
-				envVars = configSet.env_vars.map((e) => ({ ...e }));
+				envVars = configSet.envVars.map((e) => ({ ...e }));
 			}
 		}
 		if (configSet.labels && configSet.labels.length > 0) {
@@ -356,11 +356,11 @@
 				volumeMappings = configSet.volumes.map((v) => ({ ...v }));
 			}
 		}
-		if (configSet.network_mode) {
-			networkMode = configSet.network_mode;
+		if (configSet.networkMode) {
+			networkMode = configSet.networkMode;
 		}
-		if (configSet.restart_policy) {
-			restartPolicy = configSet.restart_policy;
+		if (configSet.restartPolicy) {
+			restartPolicy = configSet.restartPolicy;
 		}
 	}
 

@@ -125,6 +125,11 @@ export async function getEnvironment(id: number): Promise<Environment | undefine
 	return results[0];
 }
 
+export async function getEnvironmentByName(name: string): Promise<Environment | undefined> {
+	const results = await db.select().from(environments).where(eq(environments.name, name));
+	return results[0];
+}
+
 export async function createEnvironment(env: Omit<Environment, 'id' | 'createdAt' | 'updatedAt'>): Promise<Environment> {
 	const result = await db.insert(environments).values({
 		name: env.name,
@@ -2487,6 +2492,8 @@ export interface StackSourceData {
 	sourceType: StackSourceType;
 	gitRepositoryId: number | null;
 	gitStackId: number | null;
+	composePath: string | null;
+	envPath: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -2527,9 +2534,10 @@ export async function getStackSource(stackName: string, environmentId?: number |
 
 export async function getStackSources(environmentId?: number | null): Promise<StackSourceWithRepo[]> {
 	let results;
-	if (environmentId !== undefined) {
+	if (environmentId !== undefined && environmentId !== null) {
+		// Only get stacks for the specific environment
 		results = await db.select().from(stackSources)
-			.where(or(eq(stackSources.environmentId, environmentId), isNull(stackSources.environmentId)))
+			.where(eq(stackSources.environmentId, environmentId))
 			.orderBy(asc(stackSources.stackName));
 	} else {
 		results = await db.select().from(stackSources).orderBy(asc(stackSources.stackName));
@@ -2563,6 +2571,8 @@ export async function upsertStackSource(data: {
 	sourceType: StackSourceType;
 	gitRepositoryId?: number | null;
 	gitStackId?: number | null;
+	composePath?: string | null;
+	envPath?: string | null;
 }): Promise<StackSourceData> {
 	const existing = await getStackSource(data.stackName, data.environmentId);
 
@@ -2572,6 +2582,8 @@ export async function upsertStackSource(data: {
 				sourceType: data.sourceType,
 				gitRepositoryId: data.gitRepositoryId || null,
 				gitStackId: data.gitStackId || null,
+				composePath: data.composePath ?? null,
+				envPath: data.envPath ?? null,
 				updatedAt: new Date().toISOString()
 			})
 			.where(eq(stackSources.id, existing.id));
@@ -2582,10 +2594,31 @@ export async function upsertStackSource(data: {
 			environmentId: data.environmentId ?? null,
 			sourceType: data.sourceType,
 			gitRepositoryId: data.gitRepositoryId || null,
-			gitStackId: data.gitStackId || null
+			gitStackId: data.gitStackId || null,
+			composePath: data.composePath ?? null,
+			envPath: data.envPath ?? null
 		});
 		return getStackSource(data.stackName, data.environmentId) as Promise<StackSourceData>;
 	}
+}
+
+export async function updateStackSource(
+	stackName: string,
+	environmentId: number | null,
+	updates: { composePath?: string | null; envPath?: string | null }
+): Promise<boolean> {
+	const existing = await getStackSource(stackName, environmentId);
+	if (!existing) return false;
+
+	await db.update(stackSources)
+		.set({
+			composePath: updates.composePath !== undefined ? updates.composePath : existing.composePath,
+			envPath: updates.envPath !== undefined ? updates.envPath : existing.envPath,
+			updatedAt: new Date().toISOString()
+		})
+		.where(eq(stackSources.id, existing.id));
+
+	return true;
 }
 
 export async function deleteStackSource(stackName: string, environmentId?: number | null): Promise<boolean> {
@@ -3083,10 +3116,8 @@ export interface ContainerEventResult {
 }
 
 export async function logContainerEvent(data: ContainerEventCreateData): Promise<ContainerEventData> {
-	// Timestamp is always a string with nanosecond precision (stored as text in both SQLite and PostgreSQL)
-	// For PostgreSQL, we convert to Date since the schema uses native timestamp type
-	const timestamp = isPostgres ? new Date(data.timestamp) : data.timestamp;
-
+	// Timestamp is already an ISO-8601 string from event-subprocess
+	// Both SQLite and PostgreSQL schemas use mode: 'string' so we pass it directly
 	const result = await db.insert(containerEvents).values({
 		environmentId: data.environmentId ?? null,
 		containerId: data.containerId,
@@ -3094,7 +3125,7 @@ export async function logContainerEvent(data: ContainerEventCreateData): Promise
 		image: data.image ?? null,
 		action: data.action,
 		actorAttributes: data.actorAttributes ? JSON.stringify(data.actorAttributes) : null,
-		timestamp
+		timestamp: data.timestamp
 	}).returning();
 
 	return getContainerEvent(result[0].id) as Promise<ContainerEventData>;
@@ -3897,6 +3928,73 @@ export async function setEventCleanupEnabled(enabled: boolean): Promise<void> {
 }
 
 // =============================================================================
+// EXTERNAL STACK PATHS
+// =============================================================================
+
+const EXTERNAL_STACK_PATHS_KEY = 'external_stack_paths';
+
+export async function getExternalStackPaths(): Promise<string[]> {
+	const result = await db.select().from(settings).where(eq(settings.key, EXTERNAL_STACK_PATHS_KEY));
+	if (result[0]) {
+		try {
+			const parsed = JSON.parse(result[0].value);
+			return Array.isArray(parsed) ? parsed : [];
+		} catch {
+			return [];
+		}
+	}
+	return [];
+}
+
+export async function setExternalStackPaths(paths: string[]): Promise<void> {
+	const jsonValue = JSON.stringify(paths);
+	const existing = await db.select().from(settings).where(eq(settings.key, EXTERNAL_STACK_PATHS_KEY));
+	if (existing.length > 0) {
+		await db.update(settings)
+			.set({ value: jsonValue, updatedAt: new Date().toISOString() })
+			.where(eq(settings.key, EXTERNAL_STACK_PATHS_KEY));
+	} else {
+		await db.insert(settings).values({
+			key: EXTERNAL_STACK_PATHS_KEY,
+			value: jsonValue
+		});
+	}
+}
+
+// =============================================================================
+// PRIMARY STACK LOCATION
+// =============================================================================
+
+const PRIMARY_STACK_LOCATION_KEY = 'primary_stack_location';
+
+export async function getPrimaryStackLocation(): Promise<string | null> {
+	const result = await db.select().from(settings).where(eq(settings.key, PRIMARY_STACK_LOCATION_KEY));
+	if (result[0]?.value) {
+		return result[0].value;
+	}
+	return null;
+}
+
+export async function setPrimaryStackLocation(path: string | null): Promise<void> {
+	const existing = await db.select().from(settings).where(eq(settings.key, PRIMARY_STACK_LOCATION_KEY));
+	if (path === null) {
+		// Delete the setting if path is null
+		if (existing.length > 0) {
+			await db.delete(settings).where(eq(settings.key, PRIMARY_STACK_LOCATION_KEY));
+		}
+	} else if (existing.length > 0) {
+		await db.update(settings)
+			.set({ value: path, updatedAt: new Date().toISOString() })
+			.where(eq(settings.key, PRIMARY_STACK_LOCATION_KEY));
+	} else {
+		await db.insert(settings).values({
+			key: PRIMARY_STACK_LOCATION_KEY,
+			value: path
+		});
+	}
+}
+
+// =============================================================================
 // ENVIRONMENT UPDATE CHECK SETTINGS
 // =============================================================================
 
@@ -3986,6 +4084,66 @@ export async function getDefaultTimezone(): Promise<string> {
  */
 export async function setDefaultTimezone(timezone: string): Promise<void> {
 	await setSetting('default_timezone', timezone);
+}
+
+// =============================================================================
+// BACKGROUND MONITORING SETTINGS
+// =============================================================================
+
+/**
+ * Get event collection mode ('stream' or 'poll').
+ * Defaults to 'stream' for real-time event streaming.
+ */
+export async function getEventCollectionMode(): Promise<'stream' | 'poll'> {
+	const value = await getSetting('event_collection_mode');
+	return value || 'stream';
+}
+
+/**
+ * Set event collection mode.
+ */
+export async function setEventCollectionMode(mode: 'stream' | 'poll'): Promise<void> {
+	await setSetting('event_collection_mode', mode);
+}
+
+/**
+ * Get event poll interval in milliseconds.
+ * Defaults to 60000ms (60 seconds).
+ */
+export async function getEventPollInterval(): Promise<number> {
+	const value = await getSetting('event_poll_interval');
+	return value || 60000;
+}
+
+/**
+ * Set event poll interval in milliseconds.
+ * Valid range: 30000ms (30s) to 300000ms (5min).
+ */
+export async function setEventPollInterval(interval: number): Promise<void> {
+	if (interval < 30000 || interval > 300000) {
+		throw new Error('Event poll interval must be between 30s and 300s');
+	}
+	await setSetting('event_poll_interval', interval);
+}
+
+/**
+ * Get metrics collection interval in milliseconds.
+ * Defaults to 30000ms (30 seconds) - changed from hardcoded 10s.
+ */
+export async function getMetricsCollectionInterval(): Promise<number> {
+	const value = await getSetting('metrics_collection_interval');
+	return value || 30000;
+}
+
+/**
+ * Set metrics collection interval in milliseconds.
+ * Valid range: 10000ms (10s) to 300000ms (5min).
+ */
+export async function setMetricsCollectionInterval(interval: number): Promise<void> {
+	if (interval < 10000 || interval > 300000) {
+		throw new Error('Metrics collection interval must be between 10s and 300s');
+	}
+	await setSetting('metrics_collection_interval', interval);
 }
 
 // =============================================================================

@@ -44,12 +44,12 @@
 		id: number;
 		name: string;
 		description?: string;
-		env_vars?: { key: string; value: string }[];
+		envVars?: { key: string; value: string }[];
 		labels?: { key: string; value: string }[];
 		ports?: { hostPort: string; containerPort: string; protocol: string }[];
 		volumes?: { hostPath: string; containerPath: string; mode: string }[];
-		network_mode: string;
-		restart_policy: string;
+		networkMode: string;
+		restartPolicy: string;
 	}
 
 	interface Props {
@@ -897,7 +897,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => isOpen && focusFirstInput()}>
-	<Dialog.Content class="max-w-4xl w-[56rem] max-h-[90vh] p-0 flex flex-col overflow-hidden" style="min-height: 85vh; height: 85vh;">
+	<Dialog.Content class="max-w-4xl w-full max-h-[90vh] p-0 flex flex-col overflow-hidden sm:max-h-[85vh]">
 		<Dialog.Header class="px-5 py-4 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
 			<Dialog.Title class="text-base font-semibold flex items-center gap-1">
 				Edit container
@@ -944,7 +944,7 @@
 		</Dialog.Header>
 
 		{#if loadingData}
-			<div class="flex-1 flex items-center justify-center text-muted-foreground text-sm" style="min-height: calc(85vh - 120px);">
+			<div class="flex-1 flex items-center justify-center text-muted-foreground text-sm min-h-[200px]">
 				<Loader2 class="w-5 h-5 animate-spin mr-2" />
 				Loading container data...
 			</div>

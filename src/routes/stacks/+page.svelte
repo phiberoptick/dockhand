@@ -8,12 +8,13 @@
 	import { Input } from '$lib/components/ui/input';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
-	import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, GitBranch, RefreshCw, Loader2, FileCode, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, ExternalLink, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw } from 'lucide-svelte';
+	import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import } from 'lucide-svelte';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
 	import type { ComposeStackInfo, ContainerStats } from '$lib/types';
 	import StackModal from './StackModal.svelte';
 	import GitStackModal from './GitStackModal.svelte';
+	import ImportStackModal from './ImportStackModal.svelte';
 	import GitDeployProgressPopover from './GitDeployProgressPopover.svelte';
 	import ContainerInspectModal from '../containers/ContainerInspectModal.svelte';
 	import FileBrowserModal from '../containers/FileBrowserModal.svelte';
@@ -30,7 +31,7 @@
 	type SortDirection = 'asc' | 'desc';
 
 	let stacks = $state<ComposeStackInfo[]>([]);
-	let stackSources = $state<Record<string, { sourceType: string; repository?: any; gitStack?: any }>>({});
+	let stackSources = $state<Record<string, { sourceType: string; composePath?: string | null; repository?: any; gitStack?: any }>>({});
 	let stackEnvVarCounts = $state<Record<string, number>>({});
 	let gitStacks = $state<any[]>([]);
 	let gitRepositories = $state<any[]>([]);
@@ -43,6 +44,7 @@
 	let showCreateModal = $state(false);
 	let showEditModal = $state(false);
 	let showGitModal = $state(false);
+	let showImportModal = $state(false);
 	let editingStackName = $state('');
 	let editingGitStack = $state<any>(null);
 	let envId = $state<number | null>(null);
@@ -576,37 +578,24 @@
 			stackSources = sourcesData && !sourcesData.error ? sourcesData : {};
 			gitStacks = Array.isArray(gitStacksData) ? gitStacksData : [];
 
-			// Create a set of docker stack names for quick lookup
-			const dockerStackNames = new Set(dockerStacks.map((s: ComposeStackInfo) => s.name));
-
-			// Add undeployed git stacks as placeholder entries
-			const undeployedGitStacks: ComposeStackInfo[] = gitStacks
-				.filter((gs: any) => !dockerStackNames.has(gs.stackName))
-				.map((gs: any) => ({
-					name: gs.stackName,
-					status: 'not deployed',
-					containers: [],
-					containerDetails: [],
-					configFile: gs.composePath,
-					workingDir: ''
-				}));
-
-			// Add gitStack to all git-based stacks (both deployed and undeployed)
+			// Add gitStack details to all git-based stacks
+			// Note: The API already includes undeployed stacks from the database,
+			// so we just need to attach the gitStack object for additional metadata
 			for (const gs of gitStacks) {
 				if (!stackSources[gs.stackName]) {
-					// Undeployed git stack - create new source entry
+					// Git stack not in sources yet - create source entry
 					stackSources[gs.stackName] = {
 						sourceType: 'git',
 						repository: gs.repository,
 						gitStack: gs
 					};
 				} else if (stackSources[gs.stackName].sourceType === 'git') {
-					// Deployed git stack - add gitStack to existing source
+					// Git stack already in sources - add gitStack object
 					stackSources[gs.stackName].gitStack = gs;
 				}
 			}
 
-			stacks = [...dockerStacks, ...undeployedGitStacks];
+			stacks = dockerStacks;
 
 			// Fetch env var counts for internal and git stacks (in background, don't block UI)
 			const allStackNames = stacks.map(s => s.name);
@@ -1130,6 +1119,10 @@
 					<Plus class="w-3.5 h-3.5 mr-1" />
 					Create
 				</Button>
+				<Button size="sm" variant="outline" onclick={() => showImportModal = true}>
+					<Import class="w-3.5 h-3.5 mr-1" />
+					Adopt
+				</Button>
 			{/if}
 		</div>
 	</div>
@@ -1281,7 +1274,8 @@
 			{#snippet cell(column, stack, rowState)}
 				{@const source = getStackSource(stack.name)}
 				{#if column.id === 'name'}
-					{#if source.sourceType === 'internal'}
+					{#if source.sourceType !== 'git'}
+						<!-- Internal stacks (including those needing file location) are clickable -->
 						<button
 							type="button"
 							class="font-medium text-xs hover:text-primary hover:underline cursor-pointer text-left"
@@ -1290,6 +1284,7 @@
 							{stack.name}
 						</button>
 					{:else}
+						<!-- Git stacks open in GitStackModal instead -->
 						<span class="font-medium text-xs">{stack.name}</span>
 					{/if}
 					{#if stackEnvVarCounts[stack.name]}
@@ -1307,41 +1302,45 @@
 					{/if}
 				{:else if column.id === 'source'}
 					{#if source.sourceType === 'git'}
+						<span
+							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 shadow-sm min-w-[5.5rem]"
+							title={source.repository ? `${source.repository.url} (${source.repository.branch})` : 'Deployed from Git repository'}
+						>
+							<GitBranch class="w-3 h-3" />
+							Git
+						</span>
+					{:else if source.sourceType === 'internal'}
+						<span
+							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 shadow-sm min-w-[5.5rem]"
+							title="Managed by Dockhand"
+						>
+							<FileCode class="w-3 h-3" />
+							Internal
+						</span>
+					{:else}
+						<span
+							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 shadow-sm min-w-[5.5rem]"
+							title="File location unknown"
+						>
+							<ExternalLink class="w-3 h-3" />
+							Untracked
+						</span>
+					{/if}
+				{:else if column.id === 'location'}
+					{#if source.composePath}
+						{@const dirPath = source.composePath.replace(/\/[^/]+$/, '')}
 						<Tooltip.Root>
-							<Tooltip.Trigger>
-								<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 shadow-sm">
-									<GitBranch class="w-3 h-3" />
-									Git
+							<Tooltip.Trigger class="w-full text-left">
+								<span class="text-xs text-muted-foreground block truncate">
+									{dirPath}
 								</span>
 							</Tooltip.Trigger>
-							<Tooltip.Content>
-								{#if source.repository}
-									{source.repository.url} ({source.repository.branch})
-								{:else}
-									Deployed from Git repository
-								{/if}
+							<Tooltip.Content class="max-w-md">
+								<code class="text-xs">{source.composePath}</code>
 							</Tooltip.Content>
 						</Tooltip.Root>
-					{:else if source.sourceType === 'internal'}
-						<Tooltip.Root>
-							<Tooltip.Trigger>
-								<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 shadow-sm">
-									<FileCode class="w-3 h-3" />
-									Internal
-								</span>
-							</Tooltip.Trigger>
-							<Tooltip.Content class="whitespace-nowrap">Created in Dockhand</Tooltip.Content>
-						</Tooltip.Root>
 					{:else}
-						<Tooltip.Root>
-							<Tooltip.Trigger>
-								<span class="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 shadow-sm">
-									<ExternalLink class="w-3 h-3" />
-									External
-								</span>
-							</Tooltip.Trigger>
-							<Tooltip.Content class="whitespace-nowrap">Created outside Dockhand</Tooltip.Content>
-						</Tooltip.Root>
+						<span class="text-xs text-muted-foreground/50">—</span>
 					{/if}
 				{:else if column.id === 'containers'}
 					<div class="flex items-center gap-1">
@@ -1501,16 +1500,7 @@
 								</GitDeployProgressPopover>
 							{/if}
 							{#if $canAccess('stacks', 'edit')}
-								{#if source.sourceType === 'internal'}
-									<button
-										type="button"
-										onclick={() => editStack(stack.name)}
-										title="Edit"
-										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
-									>
-										<Pencil class="w-3 h-3 text-muted-foreground hover:text-blue-500" />
-									</button>
-								{:else if source.sourceType === 'git' && source.gitStack}
+								{#if source.sourceType === 'git' && source.gitStack}
 									<button
 										type="button"
 										onclick={() => openGitModal(source.gitStack)}
@@ -1518,6 +1508,16 @@
 										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
 									>
 										<Pencil class="w-3 h-3 text-muted-foreground hover:text-purple-500" />
+									</button>
+								{:else}
+									<!-- Internal stacks (including those needing file location) -->
+									<button
+										type="button"
+										onclick={() => editStack(stack.name)}
+										title="Edit"
+										class="p-1 rounded hover:bg-muted transition-colors opacity-70 hover:opacity-100 cursor-pointer"
+									>
+										<Pencil class="w-3 h-3 text-muted-foreground hover:text-blue-500" />
 									</button>
 								{/if}
 							{/if}
@@ -1945,6 +1945,12 @@
 		editingGitStack = null;
 	}}
 	onSaved={fetchStacks}
+/>
+
+<ImportStackModal
+	bind:open={showImportModal}
+	onClose={() => showImportModal = false}
+	onAdopted={fetchStacks}
 />
 
 <ContainerInspectModal

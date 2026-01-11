@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { toast } from 'svelte-sonner';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import * as Popover from '$lib/components/ui/popover';
@@ -1300,6 +1301,12 @@
 		loadLayoutMode();
 		loadStatusFilter();
 
+		// Check for image filter from URL params (from images page link)
+		const imageParam = $page.url.searchParams.get('image');
+		if (imageParam) {
+			searchQuery = imageParam;
+		}
+
 		// Load persisted pending updates from database
 		loadPendingUpdates();
 
@@ -1687,7 +1694,10 @@
 						<div class="{isFieldHighlighted(container.id, 'memory') ? 'stat-highlight' : ''} text-right">
 							{#if containerStats.get(container.id)}
 								{@const stats = containerStats.get(container.id)}
-								<span class="text-xs font-mono {stats.memoryPercent > 80 ? 'text-red-500' : stats.memoryPercent > 50 ? 'text-yellow-500' : 'text-muted-foreground'}" title="{formatBytes(stats.memoryUsage)} / {formatBytes(stats.memoryLimit)}">{formatBytes(stats.memoryUsage)}</span>
+								{@const memoryTooltip = stats.memoryCache > 0
+									? `${formatBytes(stats.memoryUsage)} / ${formatBytes(stats.memoryLimit)} (Total: ${formatBytes(stats.memoryRaw)} | Cache: ${formatBytes(stats.memoryCache)})`
+									: `${formatBytes(stats.memoryUsage)} / ${formatBytes(stats.memoryLimit)}`}
+								<span class="text-xs font-mono {stats.memoryPercent > 80 ? 'text-red-500' : stats.memoryPercent > 50 ? 'text-yellow-500' : 'text-muted-foreground'}" title={memoryTooltip}>{formatBytes(stats.memoryUsage)}</span>
 							{:else if container.state === 'running'}
 								<span class="text-xs text-muted-foreground/50">...</span>
 							{:else}

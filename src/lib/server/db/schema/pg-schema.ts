@@ -335,6 +335,8 @@ export const stackSources = pgTable('stack_sources', {
 	sourceType: text('source_type').notNull().default('internal'),
 	gitRepositoryId: integer('git_repository_id').references(() => gitRepositories.id, { onDelete: 'set null' }),
 	gitStackId: integer('git_stack_id').references(() => gitStacks.id, { onDelete: 'set null' }),
+	composePath: text('compose_path'), // Custom path to compose file (for stacks with non-default location)
+	envPath: text('env_path'), // Custom path to .env file (for stacks with non-default location)
 	createdAt: timestamp('created_at', { mode: 'string' }).defaultNow(),
 	updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow()
 }, (table) => ({

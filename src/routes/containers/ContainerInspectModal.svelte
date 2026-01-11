@@ -4,10 +4,10 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, Activity, Wifi, Pencil, RefreshCw, X, FolderOpen, Moon } from 'lucide-svelte';
+	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, Activity, Wifi, Pencil, RefreshCw, X, FolderOpen, Moon, Tags, ExternalLink } from 'lucide-svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
-	import { currentEnvironment, appendEnvParam } from '$lib/stores/environment';
+	import { currentEnvironment, appendEnvParam, environments } from '$lib/stores/environment';
 	import ImageLayersView from '../images/ImageLayersView.svelte';
 	import LogsPanel from '../logs/LogsPanel.svelte';
 	import FileBrowserPanel from './FileBrowserPanel.svelte';
@@ -42,6 +42,19 @@
 	let showRawJson = $state(false);
 	let jsonCopied = $state(false);
 
+	// Label copy state
+	let copiedLabel = $state<string | null>(null);
+
+	async function copyLabel(key: string, value: string) {
+		try {
+			await navigator.clipboard.writeText(`${key}=${value}`);
+			copiedLabel = key;
+			setTimeout(() => copiedLabel = null, 2000);
+		} catch (err) {
+			console.error('Failed to copy:', err);
+		}
+	}
+
 	// Processes state
 	interface ProcessesData {
 		Titles: string[];
@@ -74,6 +87,44 @@
 	let isLiveConnected = $state(false);
 
 	let editInputRef: HTMLInputElement | null = null;
+
+	// Current environment details for port URL generation
+	const currentEnvDetails = $derived($environments.find(e => e.id === $currentEnvironment?.id) ?? null);
+
+	function extractHostFromUrl(urlString: string): string | null {
+		if (!urlString) return null;
+		// Handle tcp:// URLs (Docker remote)
+		const tcpMatch = urlString.match(/^tcp:\/\/([^:\/]+)/);
+		if (tcpMatch) return tcpMatch[1];
+		// Handle http:// or https:// URLs
+		const httpMatch = urlString.match(/^https?:\/\/([^:\/]+)/);
+		if (httpMatch) return httpMatch[1];
+		// Handle host:port format
+		const hostPortMatch = urlString.match(/^([^:\/]+):\d+/);
+		if (hostPortMatch) return hostPortMatch[1];
+		// Just a hostname
+		return urlString;
+	}
+
+	function getPortUrl(publicPort: number): string | null {
+		const env = currentEnvDetails;
+		if (!env) return null;
+		// Priority 1: Use publicIp if configured
+		if (env.publicIp) {
+			return `http://${env.publicIp}:${publicPort}`;
+		}
+		// Priority 2: Extract from host for direct/hawser-standard
+		const connectionType = env.connectionType || 'socket';
+		if (connectionType === 'direct' && env.host) {
+			const host = extractHostFromUrl(env.host);
+			if (host) return `http://${host}:${publicPort}`;
+		} else if (connectionType === 'hawser-standard' && env.host) {
+			const host = extractHostFromUrl(env.host);
+			if (host) return `http://${host}:${publicPort}`;
+		}
+		// No public IP available for socket or hawser-edge
+		return null;
+	}
 
 	function startEditing() {
 		editName = displayName;
@@ -379,7 +430,7 @@
 </script>
 
 <Dialog.Root bind:open>
-	<Dialog.Content class="max-w-6xl h-[90vh] flex flex-col">
+	<Dialog.Content class="max-w-6xl w-full h-[calc(100vh-2rem)] flex flex-col">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<Box class="w-5 h-5" />
@@ -450,7 +501,7 @@
 			</Dialog.Title>
 		</Dialog.Header>
 
-		<div class="flex-1 flex flex-col min-h-0">
+		<div class="flex-1 flex flex-col min-h-[400px]">
 			{#if loading}
 				<div class="flex items-center justify-center py-8">
 					<Loader2 class="w-6 h-6 animate-spin text-muted-foreground" />
@@ -461,7 +512,7 @@
 				</div>
 			{:else if containerData}
 				<Tabs.Root bind:value={activeTab} class="w-full h-full flex flex-col">
-					<Tabs.List class="w-full justify-start shrink-0 flex-wrap">
+					<Tabs.List class="w-full justify-start shrink-0 flex-wrap h-auto min-h-10 bg-muted rounded-lg">
 						<Tabs.Trigger value="overview" onclick={() => showLogs = false}>Overview</Tabs.Trigger>
 						<Tabs.Trigger value="logs" onclick={() => showLogs = true}>Logs</Tabs.Trigger>
 						<Tabs.Trigger value="layers" onclick={() => showLogs = false}>Layers</Tabs.Trigger>
@@ -470,6 +521,7 @@
 						<Tabs.Trigger value="mounts" onclick={() => showLogs = false}>Mounts</Tabs.Trigger>
 						<Tabs.Trigger value="files" onclick={() => showLogs = false}>Files</Tabs.Trigger>
 						<Tabs.Trigger value="env" onclick={() => showLogs = false}>Environment</Tabs.Trigger>
+						<Tabs.Trigger value="labels" onclick={() => showLogs = false}>Labels</Tabs.Trigger>
 						<Tabs.Trigger value="security" onclick={() => showLogs = false}>Security</Tabs.Trigger>
 						<Tabs.Trigger value="resources" onclick={() => showLogs = false}>Resources</Tabs.Trigger>
 						<Tabs.Trigger value="health" onclick={() => showLogs = false}>Health</Tabs.Trigger>
@@ -642,23 +694,6 @@
 							</div>
 						{/if}
 
-						<!-- Labels (collapsible) -->
-						{#if containerData.Config?.Labels && Object.keys(containerData.Config.Labels).length > 0}
-							<details class="group">
-								<summary class="text-sm font-semibold cursor-pointer hover:text-primary">
-									Labels ({Object.keys(containerData.Config.Labels).length})
-								</summary>
-								<div class="space-y-1 mt-2 max-h-32 overflow-y-auto">
-									{#each Object.entries(containerData.Config.Labels) as [key, value]}
-										<div class="text-xs p-2 bg-muted rounded">
-											<code class="text-muted-foreground">{key}</code>
-											<code class="text-muted-foreground">=</code>
-											<code class="break-all">{value}</code>
-										</div>
-									{/each}
-								</div>
-							</details>
-						{/if}
 					</Tabs.Content>
 
 					<!-- Processes Tab -->
@@ -845,8 +880,22 @@
 									{#each Object.entries(containerData.NetworkSettings.Ports) as [containerPort, hostBindings]}
 										{#if hostBindings && hostBindings.length > 0}
 											{#each hostBindings as binding}
+												{@const url = getPortUrl(parseInt(binding.HostPort))}
 												<div class="flex items-center gap-2 text-xs p-2 bg-muted rounded">
-													<code>{binding.HostIp || '0.0.0.0'}:{binding.HostPort}</code>
+													{#if url}
+														<a
+															href={url}
+															target="_blank"
+															rel="noopener noreferrer"
+															class="inline-flex items-center gap-1 text-primary hover:underline"
+															title="Open {url}"
+														>
+															<code>{binding.HostIp || '0.0.0.0'}:{binding.HostPort}</code>
+															<ExternalLink class="w-3 h-3" />
+														</a>
+													{:else}
+														<code>{binding.HostIp || '0.0.0.0'}:{binding.HostPort}</code>
+													{/if}
 													<span class="text-muted-foreground">→</span>
 													<code>{containerPort}</code>
 												</div>
@@ -941,6 +990,37 @@
 							</div>
 						{:else}
 							<p class="text-sm text-muted-foreground">No environment variables</p>
+						{/if}
+					</Tabs.Content>
+
+					<!-- Labels Tab -->
+					<Tabs.Content value="labels" class="space-y-4 overflow-auto">
+						{#if containerData.Config?.Labels && Object.keys(containerData.Config.Labels).length > 0}
+							<div class="space-y-1">
+								{#each Object.entries(containerData.Config.Labels).sort((a, b) => a[0].localeCompare(b[0])) as [key, value]}
+									<div class="text-xs p-2 bg-muted rounded flex items-start gap-2 group">
+										<div class="flex-1 min-w-0">
+											<code class="text-muted-foreground font-medium">{key}</code>
+											<code class="text-muted-foreground">=</code>
+											<code class="break-all">{value}</code>
+										</div>
+										<button
+											type="button"
+											onclick={() => copyLabel(key, value)}
+											class="shrink-0 p-1 rounded hover:bg-background/50 transition-colors opacity-0 group-hover:opacity-100 {copiedLabel === key ? '!opacity-100' : ''}"
+											title={copiedLabel === key ? 'Copied!' : 'Copy label'}
+										>
+											{#if copiedLabel === key}
+												<Check class="w-3 h-3 text-green-500" />
+											{:else}
+												<Copy class="w-3 h-3 text-muted-foreground" />
+											{/if}
+										</button>
+									</div>
+								{/each}
+							</div>
+						{:else}
+							<p class="text-sm text-muted-foreground">No labels</p>
 						{/if}
 					</Tabs.Content>
 
@@ -1187,7 +1267,7 @@
 
 <!-- Raw JSON Modal -->
 <Dialog.Root bind:open={showRawJson}>
-	<Dialog.Content class="max-w-4xl h-[80vh] flex flex-col">
+	<Dialog.Content class="max-w-4xl max-h-[90vh] sm:max-h-[80vh] flex flex-col">
 		<Dialog.Header class="shrink-0">
 			<Dialog.Title class="flex items-center gap-2">
 				<Code class="w-5 h-5" />

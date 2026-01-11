@@ -52,7 +52,7 @@ export interface EnvironmentStats {
 	updateCheckAutoUpdate: boolean;
 	labels?: string[];
 	connectionType: 'socket' | 'direct' | 'hawser-standard' | 'hawser-edge';
-	online: boolean;
+	online?: boolean; // undefined = connecting, false = offline, true = online
 	error?: string;
 	containers: {
 		total: number;

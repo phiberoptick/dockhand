@@ -43,8 +43,13 @@
 
 	interface ExpandedImageState {
 		loading: boolean;
+		loadingMore: boolean;
 		error: string;
 		tags: TagInfo[];
+		total: number;
+		page: number;
+		pageSize: number;
+		hasNext: boolean;
 	}
 
 	let registries = $state<Registry[]>([]);
@@ -226,38 +231,100 @@
 			const { [imageName]: _, ...rest } = expandedImages;
 			expandedImages = rest;
 		} else {
-			// Expand and fetch tags
-			expandedImages = {
-				...expandedImages,
-				[imageName]: { loading: true, error: '', tags: [] }
-			};
+			// Expand and fetch first page
+			await fetchTagsPage(imageName, 1, true);
+		}
+	}
 
-			try {
-				let url = `/api/registry/tags?image=${encodeURIComponent(imageName)}`;
-				if (selectedRegistryId) {
-					url += `&registry=${selectedRegistryId}`;
-				}
+	async function loadMoreTags(imageName: string) {
+		const state = expandedImages[imageName];
+		if (!state || state.loading || state.loadingMore || !state.hasNext) return;
+		await fetchTagsPage(imageName, state.page + 1, false);
+	}
 
-				const response = await fetch(url);
-				if (response.ok) {
-					const tags = await response.json();
-					expandedImages = {
-						...expandedImages,
-						[imageName]: { loading: false, error: '', tags }
-					};
-				} else {
-					const data = await response.json();
-					expandedImages = {
-						...expandedImages,
-						[imageName]: { loading: false, error: data.error || 'Failed to fetch tags', tags: [] }
-					};
-				}
-			} catch (error: any) {
+	async function fetchTagsPage(imageName: string, page: number, isFirstLoad: boolean) {
+		const currentState = expandedImages[imageName];
+
+		expandedImages = {
+			...expandedImages,
+			[imageName]: {
+				loading: isFirstLoad,
+				loadingMore: !isFirstLoad,
+				error: '',
+				tags: currentState?.tags || [],
+				total: currentState?.total || 0,
+				page: currentState?.page || 0,
+				pageSize: 20,
+				hasNext: currentState?.hasNext || false
+			}
+		};
+
+		try {
+			let url = `/api/registry/tags?image=${encodeURIComponent(imageName)}&page=${page}&pageSize=20`;
+			if (selectedRegistryId) {
+				url += `&registry=${selectedRegistryId}`;
+			}
+
+			const response = await fetch(url);
+			if (response.ok) {
+				const data = await response.json();
+				const prevState = expandedImages[imageName];
+				const existingTags = isFirstLoad ? [] : (prevState?.tags || []);
 				expandedImages = {
 					...expandedImages,
-					[imageName]: { loading: false, error: error.message || 'Failed to fetch tags', tags: [] }
+					[imageName]: {
+						loading: false,
+						loadingMore: false,
+						error: '',
+						tags: [...existingTags, ...data.tags],
+						total: data.total,
+						page: data.page,
+						pageSize: data.pageSize,
+						hasNext: data.hasNext
+					}
+				};
+			} else {
+				const data = await response.json();
+				expandedImages = {
+					...expandedImages,
+					[imageName]: {
+						...expandedImages[imageName],
+						loading: false,
+						loadingMore: false,
+						error: data.error || 'Failed to fetch tags'
+					}
 				};
 			}
+		} catch (error: any) {
+			expandedImages = {
+				...expandedImages,
+				[imageName]: {
+					...expandedImages[imageName],
+					loading: false,
+					loadingMore: false,
+					error: error.message || 'Failed to fetch tags'
+				}
+			};
+		}
+	}
+
+	function handleTagsWheel(event: WheelEvent, imageName: string) {
+		const target = event.currentTarget as HTMLElement;
+
+		// Prevent page scroll when at top/bottom of tags list
+		const atTop = target.scrollTop === 0;
+		const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 1;
+
+		if ((atTop && event.deltaY < 0) || (atBottom && event.deltaY > 0)) {
+			event.preventDefault();
+		}
+
+		// Load more when near bottom
+		const state = expandedImages[imageName];
+		if (!state || !state.hasNext || state.loading || state.loadingMore) return;
+
+		if (target.scrollHeight - target.scrollTop - target.clientHeight < 50) {
+			loadMoreTags(imageName);
 		}
 	}
 
@@ -328,7 +395,8 @@
 						...expandedImages,
 						[imageName]: {
 							...state,
-							tags: state.tags.filter(t => t.name !== tag)
+							tags: state.tags.filter(t => t.name !== tag),
+							total: Math.max(0, state.total - 1)
 						}
 					};
 				}
@@ -514,9 +582,9 @@
 											{expandState.error}
 										</div>
 									{:else if expandState?.tags && expandState.tags.length > 0}
-										<div class="max-h-64 overflow-y-auto">
+										<div class="max-h-64 overflow-y-auto overscroll-contain" onwheel={(e) => handleTagsWheel(e, result.name)}>
 											<table class="text-xs">
-												<thead class="text-muted-foreground sticky top-0 bg-muted/50">
+												<thead class="text-muted-foreground sticky top-0 bg-background z-10">
 													<tr>
 														<th class="text-left py-1 px-2 pr-4 font-medium">Tag</th>
 														<th class="text-left py-1 px-2 pr-4 font-medium">Size</th>
@@ -590,7 +658,20 @@
 													{/each}
 												</tbody>
 											</table>
+											<!-- Loading more indicator -->
+											{#if expandState.loadingMore}
+												<div class="flex items-center justify-center py-2 text-xs text-muted-foreground">
+													<Loader2 class="w-3 h-3 animate-spin mr-2" />
+													Loading more...
+												</div>
+											{/if}
 										</div>
+										<!-- Tags count -->
+										{#if expandState.total > 0}
+											<div class="text-xs text-muted-foreground pt-1">
+												{expandState.tags.length} of {expandState.total} tags loaded
+											</div>
+										{/if}
 									{:else}
 										<div class="text-xs text-muted-foreground py-2">
 											No tags found

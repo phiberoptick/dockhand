@@ -6,6 +6,7 @@ import { deleteGitStackFiles } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
 import { refreshSubprocessEnvironments } from '$lib/server/subprocess-manager';
 import { serializeLabels, parseLabels, MAX_LABELS } from '$lib/utils/label-colors';
+import { cleanPem } from '$lib/utils/pem';
 import { unregisterSchedule } from '$lib/server/scheduler';
 import { closeEdgeConnection } from '$lib/server/hawser';
 
@@ -62,9 +63,9 @@ export const PUT: RequestHandler = async ({ params, request, cookies }) => {
 			host: data.host,
 			port: data.port,
 			protocol: data.protocol,
-			tlsCa: data.tlsCa,
-			tlsCert: data.tlsCert,
-			tlsKey: data.tlsKey,
+			tlsCa: cleanPem(data.tlsCa),
+			tlsCert: cleanPem(data.tlsCert),
+			tlsKey: cleanPem(data.tlsKey),
 			tlsSkipVerify: data.tlsSkipVerify,
 			icon: data.icon,
 			socketPath: data.socketPath,

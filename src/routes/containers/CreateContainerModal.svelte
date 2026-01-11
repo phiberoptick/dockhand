@@ -49,12 +49,12 @@
 		id: number;
 		name: string;
 		description?: string;
-		env_vars?: { key: string; value: string }[];
+		envVars?: { key: string; value: string }[];
 		labels?: { key: string; value: string }[];
 		ports?: { hostPort: string; containerPort: string; protocol: string }[];
 		volumes?: { hostPath: string; containerPath: string; mode: string }[];
-		network_mode: string;
-		restart_policy: string;
+		networkMode: string;
+		restartPolicy: string;
 	}
 
 
@@ -564,7 +564,7 @@
 </script>
 
 <Dialog.Root bind:open onOpenChange={(isOpen) => isOpen && focusFirstInput()}>
-	<Dialog.Content class="max-w-4xl w-full h-[85vh] p-0 flex flex-col overflow-hidden !zoom-in-0 !zoom-out-0" showCloseButton={false}>
+	<Dialog.Content class="max-w-4xl w-full max-h-[90vh] sm:max-h-[85vh] p-0 flex flex-col overflow-hidden !zoom-in-0 !zoom-out-0" showCloseButton={false}>
 		<Dialog.Header class="px-5 py-4 border-b bg-muted/30 shrink-0 sticky top-0 z-10">
 			<Dialog.Title class="text-base font-semibold">Create new container</Dialog.Title>
 			<button

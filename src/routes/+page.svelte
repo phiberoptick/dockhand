@@ -335,7 +335,7 @@
 												connectionType: env.connectionType || 'socket',
 												labels: env.labels || [],
 												scannerEnabled: false,
-												online: false,
+												online: undefined, // undefined = connecting, false = offline, true = online
 												containers: { total: 0, running: 0, stopped: 0, paused: 0, restarting: 0, unhealthy: 0 },
 												images: { total: 0, totalSize: 0 },
 												volumes: { total: 0, totalSize: 0 },

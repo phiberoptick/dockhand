@@ -34,6 +34,7 @@ export interface ImageInfo {
 	size: number;
 	virtualSize: number;
 	labels: Record<string, string>;
+	containers: number; // Number of containers using this image
 }
 
 export interface VolumeUsage {
@@ -90,7 +91,9 @@ export interface ContainerStats {
 	id: string;
 	name: string;
 	cpuPercent: number;
-	memoryUsage: number;
+	memoryUsage: number;      // Actual usage (total - cache), same as docker stats
+	memoryRaw: number;        // Raw total usage before cache subtraction
+	memoryCache: number;      // File cache (inactive_file)
 	memoryLimit: number;
 	memoryPercent: number;
 	networkRx: number;
