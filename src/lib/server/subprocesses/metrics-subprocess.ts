@@ -7,12 +7,12 @@
  * Communication with main process via IPC (process.send).
  */
 
-import { getEnvironments, getEnvSetting } from '../db';
+import { getEnvironments, getEnvSetting, getMetricsCollectionInterval } from '../db';
 import { listContainers, getContainerStats, getDockerInfo, getDiskUsage } from '../docker';
 import os from 'node:os';
 import type { MainProcessCommand } from '../subprocess-manager';
 
-const COLLECT_INTERVAL = 10000; // 10 seconds
+let COLLECT_INTERVAL = 30000; // 30 seconds (default, will be loaded from settings)
 const DISK_CHECK_INTERVAL = 300000; // 5 minutes
 const DEFAULT_DISK_THRESHOLD = 80; // 80% threshold for disk warnings
 const ENV_METRICS_TIMEOUT = 15000; // 15 seconds timeout per environment for metrics
@@ -82,12 +82,16 @@ async function collectEnvMetrics(env: { id: number; name: string; host?: string;
 					cpuPercent = (cpuDelta / systemDelta) * cpuCount * 100;
 				}
 
-				// Get container memory usage (subtract cache for actual usage)
+				// Get container memory usage using the same formula as Docker CLI
+				// Docker subtracts cache (inactive_file) from total usage
+				// - cgroup v2: uses 'inactive_file'
+				// - cgroup v1: uses 'total_inactive_file'
 				const memUsage = stats.memory_stats?.usage || 0;
-				const memCache = stats.memory_stats?.stats?.cache || 0;
-				const actualMemUsed = memUsage - memCache;
+				const memStats = stats.memory_stats?.stats || {};
+				const memCache = memStats.inactive_file ?? memStats.total_inactive_file ?? 0;
+				const actualMemUsed = memCache > 0 && memCache < memUsage ? memUsage - memCache : memUsage;
 
-				return { cpuPercent, memUsage: actualMemUsed > 0 ? actualMemUsed : memUsage };
+				return { cpuPercent, memUsage: actualMemUsed };
 			} catch {
 				return { cpuPercent: 0, memUsage: 0 };
 			}
@@ -356,6 +360,16 @@ function handleCommand(command: MainProcessCommand): void {
 			// The next collection cycle will pick up the new environments
 			break;
 
+		case 'update_interval':
+			console.log(`[MetricsSubprocess] Updating collection interval to ${command.intervalMs}ms`);
+			COLLECT_INTERVAL = command.intervalMs;
+			// Clear existing interval and restart with new timing
+			if (collectInterval) {
+				clearInterval(collectInterval);
+				collectInterval = setInterval(collectMetrics, COLLECT_INTERVAL);
+			}
+			break;
+
 		case 'shutdown':
 			console.log('[MetricsSubprocess] Shutdown requested');
 			shutdown();
@@ -386,8 +400,15 @@ function shutdown(): void {
 /**
  * Start the metrics collector
  */
-function start(): void {
-	console.log('[MetricsSubprocess] Starting metrics collection (every 10s)...');
+async function start(): Promise<void> {
+	// Load interval from settings
+	try {
+		COLLECT_INTERVAL = await getMetricsCollectionInterval();
+		console.log(`[MetricsSubprocess] Starting metrics collection (every ${COLLECT_INTERVAL / 1000}s)...`);
+	} catch (error) {
+		console.error('[MetricsSubprocess] Failed to load interval from settings, using default 30s');
+		COLLECT_INTERVAL = 30000;
+	}
 
 	// Initial collection
 	collectMetrics();

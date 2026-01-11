@@ -7,7 +7,7 @@
  * Communication with main process via IPC (process.send).
  */
 
-import { getEnvironments, type ContainerEventAction } from '../db';
+import { getEnvironments, getEventCollectionMode, getEventPollInterval, type ContainerEventAction } from '../db';
 import { getDockerEvents } from '../docker';
 import type { MainProcessCommand } from '../subprocess-manager';
 
@@ -19,8 +19,14 @@ const MAX_RECONNECT_DELAY = 60000; // 1 minute max
 // Only send notifications on status CHANGES, not on every reconnect attempt
 const environmentOnlineStatus: Map<number, boolean> = new Map();
 
-// Active collectors per environment
+// Active collectors per environment (for streaming mode)
 const collectors: Map<number, AbortController> = new Map();
+
+// Poll intervals per environment (for polling mode)
+const pollIntervals: Map<number, ReturnType<typeof setInterval>> = new Map();
+
+// Last poll timestamp per environment (for polling mode)
+const lastPollTime: Map<number, number> = new Map();
 
 // Recent event cache for deduplication (key: timeNano-containerId-action)
 const recentEvents: Map<string, number> = new Map();
@@ -29,6 +35,10 @@ const CACHE_CLEANUP_INTERVAL_MS = 30000; // Clean up cache every 30 seconds
 
 let cacheCleanupInterval: ReturnType<typeof setInterval> | null = null;
 let isShuttingDown = false;
+
+// Track current settings to detect changes
+let currentPollInterval: number = 60000;
+let currentMode: 'stream' | 'poll' = 'stream';
 
 // Actions we care about for container activity
 const CONTAINER_ACTIONS: ContainerEventAction[] = [
@@ -212,6 +222,76 @@ function processEvent(event: DockerEvent, envId: number) {
 }
 
 /**
+ * Poll events for a specific environment (polling mode)
+ */
+async function pollEnvironmentEvents(envId: number, envName: string) {
+	try {
+		// Calculate 'since' timestamp (use last poll time, or start from 30s ago if first poll)
+		const now = Math.floor(Date.now() / 1000); // Unix timestamp in seconds
+		const since = lastPollTime.get(envId) || (now - 30); // Default to 30s ago on first poll
+
+		// Fetch events since last check until now
+		// IMPORTANT: 'until' is required for polling mode, otherwise Docker keeps the connection open
+		const eventStream = await getDockerEvents(
+			{ type: ['container'] },
+			envId,
+			{ since: since.toString(), until: now.toString() }
+		);
+
+		if (!eventStream) {
+			console.error(`[EventSubprocess] Failed to fetch events for ${envName}`);
+			updateEnvironmentStatus(envId, envName, false, 'Failed to fetch Docker events');
+			return;
+		}
+
+		// Mark environment as online
+		updateEnvironmentStatus(envId, envName, true);
+
+		// Read and process all events
+		const reader = eventStream.getReader();
+		const decoder = new TextDecoder();
+		let buffer = '';
+
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const lines = buffer.split('\n');
+				buffer = lines.pop() || '';
+
+				for (const line of lines) {
+					if (line.trim()) {
+						try {
+							const event = JSON.parse(line) as DockerEvent;
+							processEvent(event, envId);
+						} catch {
+							// Ignore parse errors
+						}
+					}
+				}
+			}
+		} finally {
+			try {
+				reader.releaseLock();
+			} catch {
+				// Reader already released
+			}
+		}
+
+		// Update last poll time
+		lastPollTime.set(envId, now);
+
+	} catch (error: any) {
+		if (!isShuttingDown) {
+			console.error(`[EventSubprocess] Poll error for ${envName}:`, error.message);
+			updateEnvironmentStatus(envId, envName, false, error.message);
+		}
+	}
+}
+
+/**
  * Start collecting events for a specific environment
  */
 async function startEnvironmentCollector(envId: number, envName: string) {
@@ -332,7 +412,42 @@ async function startEnvironmentCollector(envId: number, envName: string) {
 }
 
 /**
- * Stop collecting events for a specific environment
+ * Start polling mode for a specific environment
+ */
+async function startEnvironmentPoller(envId: number, envName: string, interval: number) {
+	// Stop existing poller if any
+	stopEnvironmentPoller(envId);
+
+	console.log(`[EventSubprocess] Starting poller for ${envName} (every ${interval / 1000}s)`);
+
+	// Initial poll immediately
+	await pollEnvironmentEvents(envId, envName);
+
+	// Set up interval for subsequent polls
+	const intervalId = setInterval(async () => {
+		if (!isShuttingDown) {
+			await pollEnvironmentEvents(envId, envName);
+		}
+	}, interval);
+
+	pollIntervals.set(envId, intervalId);
+}
+
+/**
+ * Stop polling for a specific environment
+ */
+function stopEnvironmentPoller(envId: number) {
+	const intervalId = pollIntervals.get(envId);
+	if (intervalId) {
+		clearInterval(intervalId);
+		pollIntervals.delete(envId);
+		lastPollTime.delete(envId);
+		environmentOnlineStatus.delete(envId);
+	}
+}
+
+/**
+ * Stop collecting events for a specific environment (streaming mode)
  */
 function stopEnvironmentCollector(envId: number) {
 	const controller = collectors.get(envId);
@@ -351,6 +466,21 @@ async function refreshEventCollectors() {
 
 	try {
 		const environments = await getEnvironments();
+		const mode = await getEventCollectionMode();
+		const pollInterval = await getEventPollInterval();
+
+		// Detect if settings changed
+		const modeChanged = mode !== currentMode;
+		const intervalChanged = pollInterval !== currentPollInterval;
+
+		if (modeChanged) {
+			console.log(`[EventSubprocess] Mode changed from ${currentMode} to ${mode}`);
+			currentMode = mode;
+		}
+		if (intervalChanged) {
+			console.log(`[EventSubprocess] Poll interval changed from ${currentPollInterval}ms to ${pollInterval}ms`);
+			currentPollInterval = pollInterval;
+		}
 
 		// Filter: only collect for environments with activity enabled AND not Hawser Edge
 		const activeEnvIds = new Set(
@@ -362,18 +492,55 @@ async function refreshEventCollectors() {
 		// Stop collectors for removed environments or those with collection disabled
 		for (const envId of collectors.keys()) {
 			if (!activeEnvIds.has(envId)) {
-				console.log(`[EventSubprocess] Stopping collector for environment ${envId}`);
+				console.log(`[EventSubprocess] Stopping stream collector for environment ${envId}`);
 				stopEnvironmentCollector(envId);
 			}
 		}
 
-		// Start collectors for environments with collection enabled
+		// Stop pollers for removed environments or those with collection disabled
+		// Also restart all pollers if interval changed
+		for (const envId of pollIntervals.keys()) {
+			if (!activeEnvIds.has(envId)) {
+				console.log(`[EventSubprocess] Stopping poller for environment ${envId}`);
+				stopEnvironmentPoller(envId);
+			} else if (intervalChanged && mode === 'poll') {
+				// Restart poller with new interval
+				console.log(`[EventSubprocess] Restarting poller for environment ${envId} with new interval`);
+				stopEnvironmentPoller(envId);
+			}
+		}
+
+		// Start collectors based on mode
 		for (const env of environments) {
 			// Skip Hawser Edge (handled by main process)
 			if (env.connectionType === 'hawser-edge') continue;
 
-			if (env.collectActivity && !collectors.has(env.id)) {
-				startEnvironmentCollector(env.id, env.name);
+			// Skip if activity collection is disabled
+			if (!env.collectActivity) continue;
+
+			const hasStreamCollector = collectors.has(env.id);
+			const hasPoller = pollIntervals.has(env.id);
+
+			if (mode === 'stream') {
+				// Switch from polling to streaming if needed
+				if (hasPoller) {
+					console.log(`[EventSubprocess] Switching ${env.name} from poll to stream`);
+					stopEnvironmentPoller(env.id);
+				}
+				// Start stream if not already running
+				if (!hasStreamCollector) {
+					startEnvironmentCollector(env.id, env.name);
+				}
+			} else if (mode === 'poll') {
+				// Switch from streaming to polling if needed
+				if (hasStreamCollector) {
+					console.log(`[EventSubprocess] Switching ${env.name} from stream to poll`);
+					stopEnvironmentCollector(env.id);
+				}
+				// Start poller if not already running (will also restart after interval change above)
+				if (!hasPoller) {
+					startEnvironmentPoller(env.id, env.name, pollInterval);
+				}
 			}
 		}
 	} catch (error) {
@@ -389,6 +556,13 @@ function handleCommand(command: MainProcessCommand): void {
 	switch (command.type) {
 		case 'refresh_environments':
 			console.log('[EventSubprocess] Refreshing environments...');
+			refreshEventCollectors();
+			break;
+
+		case 'update_interval':
+			// This is used by metrics subprocess, but we handle it here too for consistency
+			// Event subprocess re-reads interval from DB on refresh
+			console.log('[EventSubprocess] Interval update - refreshing collectors...');
 			refreshEventCollectors();
 			break;
 
@@ -411,9 +585,14 @@ function shutdown(): void {
 		cacheCleanupInterval = null;
 	}
 
-	// Stop all environment collectors
+	// Stop all environment stream collectors
 	for (const envId of collectors.keys()) {
 		stopEnvironmentCollector(envId);
+	}
+
+	// Stop all environment pollers
+	for (const envId of pollIntervals.keys()) {
+		stopEnvironmentPoller(envId);
 	}
 
 	// Clear the deduplication cache
@@ -428,6 +607,15 @@ function shutdown(): void {
  */
 async function start(): Promise<void> {
 	console.log('[EventSubprocess] Starting container event collection...');
+
+	// Initialize current settings from database
+	try {
+		currentMode = await getEventCollectionMode();
+		currentPollInterval = await getEventPollInterval();
+		console.log(`[EventSubprocess] Initial mode: ${currentMode}, poll interval: ${currentPollInterval}ms`);
+	} catch (error) {
+		console.error('[EventSubprocess] Failed to load settings, using defaults:', error);
+	}
 
 	// Start collectors for all environments
 	await refreshEventCollectors();
