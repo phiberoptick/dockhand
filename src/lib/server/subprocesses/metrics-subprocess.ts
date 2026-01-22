@@ -422,10 +422,15 @@ async function start(): Promise<void> {
 	// Schedule regular collection
 	collectInterval = setInterval(collectMetrics, COLLECT_INTERVAL);
 
-	// Start disk space checking (every 5 minutes)
-	console.log('[MetricsSubprocess] Starting disk space monitoring (every 5 minutes)');
-	checkDiskSpace(); // Initial check
-	diskCheckInterval = setInterval(checkDiskSpace, DISK_CHECK_INTERVAL);
+	// Start disk space checking (every 5 minutes) - can be disabled for Synology NAS
+	const skipDfCollection = process.env.SKIP_DF_COLLECTION === 'true' || process.env.SKIP_DF_COLLECTION === '1';
+	if (!skipDfCollection) {
+		console.log('[MetricsSubprocess] Starting disk space monitoring (every 5 minutes)');
+		checkDiskSpace(); // Initial check
+		diskCheckInterval = setInterval(checkDiskSpace, DISK_CHECK_INTERVAL);
+	} else {
+		console.log('[MetricsSubprocess] Disk space monitoring disabled (SKIP_DF_COLLECTION=true)');
+	}
 
 	// Listen for commands from main process
 	process.on('message', (message: MainProcessCommand) => {
