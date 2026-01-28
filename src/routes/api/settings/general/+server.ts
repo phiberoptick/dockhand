@@ -64,6 +64,7 @@ export interface GeneralSettings {
 	fontSize: string;
 	gridFontSize: string;
 	terminalFont: string;
+	editorFont: string;
 	// External stack paths
 	externalStackPaths: string[];
 	// Primary stack location
@@ -89,14 +90,16 @@ const DEFAULT_SETTINGS: Omit<GeneralSettings, 'scheduleRetentionDays' | 'eventRe
 	font: 'system',
 	fontSize: 'normal',
 	gridFontSize: 'normal',
-	terminalFont: 'system-mono'
+	terminalFont: 'system-mono',
+	editorFont: 'system-mono'
 };
 
 const VALID_LIGHT_THEMES = ['default', 'catppuccin', 'rose-pine', 'nord', 'solarized', 'gruvbox', 'alucard', 'github', 'material', 'atom-one'];
 const VALID_DARK_THEMES = ['default', 'catppuccin', 'dracula', 'rose-pine', 'rose-pine-moon', 'tokyo-night', 'nord', 'one-dark', 'gruvbox', 'solarized', 'everforest', 'kanagawa', 'monokai', 'monokai-pro', 'material', 'palenight', 'github'];
 const VALID_FONTS = ['system', 'geist', 'inter', 'plus-jakarta', 'dm-sans', 'outfit', 'space-grotesk', 'sofia-sans', 'nunito', 'poppins', 'montserrat', 'raleway', 'manrope', 'roboto', 'open-sans', 'lato', 'source-sans', 'work-sans', 'fira-sans', 'jetbrains-mono', 'fira-code', 'quicksand', 'comfortaa'];
 const VALID_FONT_SIZES = ['xsmall', 'small', 'normal', 'medium', 'large', 'xlarge'];
-const VALID_TERMINAL_FONTS = ['system-mono', 'jetbrains-mono', 'fira-code', 'source-code-pro', 'cascadia-code', 'menlo', 'consolas', 'sf-mono'];
+const VALID_TERMINAL_FONTS = ['system-mono', 'jetbrains-mono', 'fira-code', 'source-code-pro', 'cascadia-code', 'ibm-plex-mono', 'roboto-mono', 'ubuntu-mono', 'space-mono', 'inconsolata', 'hack', 'anonymous-pro', 'dm-mono', 'red-hat-mono', 'menlo', 'consolas', 'sf-mono'];
+const VALID_EDITOR_FONTS = VALID_TERMINAL_FONTS;
 
 const VALID_DATE_FORMATS: DateFormat[] = ['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD', 'DD.MM.YYYY'];
 
@@ -136,6 +139,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			fontSize,
 			gridFontSize,
 			terminalFont,
+			editorFont,
 			externalStackPaths,
 			primaryStackLocation
 		] = await Promise.all([
@@ -164,6 +168,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			getSetting('theme_font_size'),
 			getSetting('theme_grid_font_size'),
 			getSetting('theme_terminal_font'),
+			getSetting('theme_editor_font'),
 			getExternalStackPaths(),
 			getPrimaryStackLocation()
 		]);
@@ -194,6 +199,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			fontSize: fontSize ?? DEFAULT_SETTINGS.fontSize,
 			gridFontSize: gridFontSize ?? DEFAULT_SETTINGS.gridFontSize,
 			terminalFont: terminalFont ?? DEFAULT_SETTINGS.terminalFont,
+			editorFont: editorFont ?? DEFAULT_SETTINGS.editorFont,
 			externalStackPaths,
 			primaryStackLocation
 		};
@@ -213,7 +219,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 
 	try {
 		const body = await request.json();
-		const { confirmDestructive, showStoppedContainers, highlightUpdates, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, logBufferSizeKb, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, externalStackPaths, primaryStackLocation } = body;
+		const { confirmDestructive, showStoppedContainers, highlightUpdates, timeFormat, dateFormat, downloadFormat, defaultGrypeArgs, defaultTrivyArgs, scheduleRetentionDays, eventRetentionDays, scheduleCleanupCron, eventCleanupCron, scheduleCleanupEnabled, eventCleanupEnabled, logBufferSizeKb, defaultTimezone, eventCollectionMode, eventPollInterval, metricsCollectionInterval, lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont, externalStackPaths, primaryStackLocation } = body;
 
 		if (confirmDestructive !== undefined) {
 			await setSetting('confirm_destructive', confirmDestructive);
@@ -303,6 +309,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 		if (terminalFont !== undefined && VALID_TERMINAL_FONTS.includes(terminalFont)) {
 			await setSetting('theme_terminal_font', terminalFont);
 		}
+		if (editorFont !== undefined && VALID_EDITOR_FONTS.includes(editorFont)) {
+			await setSetting('theme_editor_font', editorFont);
+		}
 		if (externalStackPaths !== undefined && Array.isArray(externalStackPaths)) {
 			// Filter to valid non-empty strings
 			const validPaths = externalStackPaths.filter((p: unknown) => typeof p === 'string' && p.trim());
@@ -345,6 +354,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			fontSizeVal,
 			gridFontSizeVal,
 			terminalFontVal,
+			editorFontVal,
 			externalStackPathsVal,
 			primaryStackLocationVal
 		] = await Promise.all([
@@ -373,6 +383,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			getSetting('theme_font_size'),
 			getSetting('theme_grid_font_size'),
 			getSetting('theme_terminal_font'),
+			getSetting('theme_editor_font'),
 			getExternalStackPaths(),
 			getPrimaryStackLocation()
 		]);
@@ -403,6 +414,7 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			fontSize: fontSizeVal ?? DEFAULT_SETTINGS.fontSize,
 			gridFontSize: gridFontSizeVal ?? DEFAULT_SETTINGS.gridFontSize,
 			terminalFont: terminalFontVal ?? DEFAULT_SETTINGS.terminalFont,
+			editorFont: editorFontVal ?? DEFAULT_SETTINGS.editorFont,
 			externalStackPaths: externalStackPathsVal,
 			primaryStackLocation: primaryStackLocationVal
 		};

@@ -57,9 +57,8 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 	try {
 		const stackName = decodeURIComponent(params.name);
 
-		// Get variables from database (masked - secrets show as '***')
-		const dbVariables = await getStackEnvVars(stackName, envIdNum, true);
-		const dbByKey = new Map(dbVariables.map(v => [v.key, v]));
+		// Get secrets from database (masked - values show as '***')
+		const dbSecrets = await getStackEnvVars(stackName, envIdNum, true);
 
 		// Check if this stack has a custom compose path configured
 		const source = await getStackSource(stackName, envIdNum);
@@ -67,63 +66,49 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 		// Determine the env file path based on path resolution rules:
 		// - envPath = '' (empty string) → explicitly no env file
 		// - envPath = '/path/.env' → use custom path
-		// - envPath = null with composePath → suggest .env next to compose (but don't auto-load)
+		// - envPath = null with composePath → .env next to compose
 		// - envPath = null without composePath → use default location
 		let envFilePath: string | null = null;
 
 		if (source?.envPath === '') {
-			// Empty string = explicitly no env file
 			envFilePath = null;
 		} else if (source?.envPath) {
-			// Custom env path specified
 			envFilePath = source.envPath;
 		} else if (source?.composePath) {
-			// Custom compose path but no env path - suggest .env next to compose
-			// For loading, check if it exists (but don't fail if it doesn't)
 			envFilePath = join(dirname(source.composePath), '.env');
 		} else {
-			// Default location - .env in stack directory
 			const stackDir = await findStackDir(stackName, envIdNum);
 			if (stackDir) {
 				envFilePath = join(stackDir, '.env');
 			}
 		}
 
-		let fileVars: Record<string, string> = {};
-
-		if (envFilePath && existsSync(envFilePath)) {
-			try {
-				const content = await Bun.file(envFilePath).text();
-				fileVars = parseEnvFile(content);
-			} catch (e) {
-				// Ignore file read errors
-			}
-		}
-
-		// Merge: DB variables (with secrets masked) + file variables (non-secrets only)
-		// For non-secrets: file value overrides DB value (user may have edited file)
-		// For secrets: only DB value exists (masked as '***')
-		const mergedKeys = new Set([...dbByKey.keys(), ...Object.keys(fileVars)]);
 		const variables: { key: string; value: string; isSecret: boolean }[] = [];
 
-		for (const key of mergedKeys) {
-			const dbVar = dbByKey.get(key);
-			const fileValue = fileVars[key];
-
-			if (dbVar) {
-				if (dbVar.isSecret) {
-					// Secret: use masked value from DB, ignore any file value
-					variables.push({ key, value: dbVar.value, isSecret: true });
-				} else if (fileValue !== undefined) {
-					// Non-secret with file value: file overrides (user may have edited)
-					variables.push({ key, value: fileValue, isSecret: false });
-				} else {
-					// Non-secret only in DB: use DB value
-					variables.push({ key, value: dbVar.value, isSecret: false });
+		if (source?.sourceType === 'git') {
+			// Git stacks: ALL vars (overrides + secrets) come from DB
+			for (const dbVar of dbSecrets) {
+				variables.push({ key: dbVar.key, value: dbVar.value, isSecret: dbVar.isSecret });
+			}
+		} else {
+			// Internal/adopted stacks: non-secrets from file, secrets from DB
+			if (envFilePath && existsSync(envFilePath)) {
+				try {
+					const content = await Bun.file(envFilePath).text();
+					const fileVars = parseEnvFile(content);
+					for (const [key, value] of Object.entries(fileVars)) {
+						variables.push({ key, value, isSecret: false });
+					}
+				} catch {
+					// Ignore file read errors
 				}
-			} else if (fileValue !== undefined) {
-				// Variable only in file - add it as non-secret
-				variables.push({ key, value: fileValue, isSecret: false });
+			}
+
+			// Secrets come from the database (never written to file)
+			for (const secret of dbSecrets) {
+				if (secret.isSecret) {
+					variables.push({ key: secret.key, value: secret.value, isSecret: true });
+				}
 			}
 		}
 
@@ -136,15 +121,14 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 
 /**
  * PUT /api/stacks/[name]/env?env=X
- * Set/replace all environment variables for a stack.
- * Body: { variables: [{ key, value, isSecret? }] }
+ * Save secret environment variables for a stack.
+ * Body: { variables: [{ key, value, isSecret }] }
  *
- * SECURITY: Secrets are stored ONLY in the database, NEVER written to .env file.
- * For secrets, if the value is '***' (the masked placeholder), the original
- * secret value from the database is preserved instead of overwriting with '***'.
+ * Only secrets are stored in the database. Non-secret variables live in the
+ * .env file (written by PUT /env/raw) and are read directly by Docker Compose.
  *
- * The .env file only contains non-secret variables (can be edited manually).
- * Secrets are injected via shell environment variables at runtime.
+ * If a secret's value is '***' (masked placeholder), the original value
+ * from the database is preserved.
  */
 export const PUT: RequestHandler = async ({ params, url, cookies, request }) => {
 	const auth = await authorize(cookies);
@@ -177,14 +161,12 @@ export const PUT: RequestHandler = async ({ params, url, cookies, request }) => 
 			if (typeof v.value !== 'string') {
 				return json({ error: `Invalid variable "${v.key}": value must be a string` }, { status: 400 });
 			}
-			// Validate key format (env var naming convention)
 			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v.key)) {
 				return json({ error: `Invalid variable name "${v.key}": must start with a letter or underscore and contain only alphanumeric characters and underscores` }, { status: 400 });
 			}
 		}
 
-		// Check if any secrets have the masked placeholder '***'
-		// If so, we need to preserve their original values from the database
+		// Preserve masked secret values ('***') from the database
 		const secretsWithMaskedValue = body.variables.filter(
 			(v: { key: string; value: string; isSecret?: boolean }) =>
 				v.isSecret && v.value === '***'
@@ -193,16 +175,13 @@ export const PUT: RequestHandler = async ({ params, url, cookies, request }) => 
 		let variablesToSave = body.variables;
 
 		if (secretsWithMaskedValue.length > 0) {
-			// Get existing variables (unmasked) to preserve secret values
 			const existingVars = await getStackEnvVars(stackName, envIdNum, false);
 			const existingByKey = new Map(existingVars.map(v => [v.key, v]));
 
-			// Replace masked secrets with their original values
 			variablesToSave = body.variables.map((v: { key: string; value: string; isSecret?: boolean }) => {
 				if (v.isSecret && v.value === '***') {
 					const existing = existingByKey.get(v.key);
 					if (existing && existing.isSecret) {
-						// Preserve the original secret value
 						return { ...v, value: existing.value };
 					}
 				}
@@ -210,8 +189,7 @@ export const PUT: RequestHandler = async ({ params, url, cookies, request }) => 
 			});
 		}
 
-		// Save ALL variables (including secrets) to database
-		// Note: The .env file is written by PUT /env/raw endpoint, which preserves comments
+		// Save secrets to database (non-secrets live in the .env file)
 		await setStackEnvVars(stackName, envIdNum, variablesToSave);
 
 		return json({ success: true, count: variablesToSave.length });

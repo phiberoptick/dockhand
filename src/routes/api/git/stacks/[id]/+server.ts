@@ -1,9 +1,11 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName } from '$lib/server/db';
+import { getGitStack, updateGitStack, deleteGitStack, deleteStackSource, updateStackSourceName, updateStackEnvVarsName, setStackEnvVars } from '$lib/server/db';
 import { deleteGitStackFiles, deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
 import { registerSchedule, unregisterSchedule } from '$lib/server/scheduler';
+import { auditGitStack } from '$lib/server/audit';
+import { computeAuditDiff } from '$lib/utils/diff';
 
 // Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -30,7 +32,8 @@ export const GET: RequestHandler = async ({ params, cookies }) => {
 	}
 };
 
-export const PUT: RequestHandler = async ({ params, request, cookies }) => {
+export const PUT: RequestHandler = async (event) => {
+	const { params, request, cookies } = event;
 	const auth = await authorize(cookies);
 
 	try {
@@ -84,9 +87,33 @@ export const PUT: RequestHandler = async ({ params, request, cookies }) => {
 			unregisterSchedule(id, 'git_stack_sync');
 		}
 
+		// Compute diff for audit (exclude sensitive fields)
+		const diff = computeAuditDiff(existing, updated, {
+			excludeFields: ['webhookSecret', 'createdAt', 'updatedAt', 'lastSync', 'lastCommit', 'syncStatus', 'syncError']
+		});
+
+		// Audit log
+		await auditGitStack(event, 'update', updated.id, updated.stackName, updated.environmentId, diff);
+
+		// Save environment variable overrides before deploying
+		if (data.envVars && Array.isArray(data.envVars)) {
+			const stackName = data.stackName || existing.stackName;
+			const envId = updated.environmentId ?? null;
+			await setStackEnvVars(
+				stackName,
+				envId,
+				data.envVars.filter((v: any) => v.key?.trim()).map((v: any) => ({
+					key: v.key.trim(),
+					value: v.value ?? '',
+					isSecret: v.isSecret ?? false
+				}))
+			);
+		}
+
 		// If deployNow is set, deploy after saving
 		if (data.deployNow) {
 			const deployResult = await deployGitStack(id);
+			await auditGitStack(event, 'deploy', updated.id, updated.stackName, updated.environmentId);
 			return json({
 				...updated,
 				deployResult
@@ -103,7 +130,8 @@ export const PUT: RequestHandler = async ({ params, request, cookies }) => {
 	}
 };
 
-export const DELETE: RequestHandler = async ({ params, cookies }) => {
+export const DELETE: RequestHandler = async (event) => {
+	const { params, cookies } = event;
 	const auth = await authorize(cookies);
 
 	try {
@@ -122,13 +150,16 @@ export const DELETE: RequestHandler = async ({ params, cookies }) => {
 		unregisterSchedule(id, 'git_stack_sync');
 
 		// Delete git files first
-		deleteGitStackFiles(id);
+		await deleteGitStackFiles(id, existing.stackName, existing.environmentId);
 
 		// Delete the stack_sources record to free up the stack name
 		await deleteStackSource(existing.stackName, existing.environmentId);
 
 		// Delete from database
 		await deleteGitStack(id);
+
+		// Audit log
+		await auditGitStack(event, 'delete', id, existing.stackName, existing.environmentId);
 
 		return json({ success: true });
 	} catch (error) {

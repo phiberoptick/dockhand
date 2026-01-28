@@ -4,7 +4,7 @@
 	import * as Tabs from '$lib/components/ui/tabs';
 	import { Button } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, Activity, Wifi, Pencil, RefreshCw, X, FolderOpen, Moon, Tags, ExternalLink } from 'lucide-svelte';
+	import { Loader2, Box, Info, Layers, Cpu, MemoryStick, HardDrive, Network, Shield, Settings2, Code, Copy, Check, Activity, Wifi, Pencil, RefreshCw, X, FolderOpen, Moon, Tags, ExternalLink, Gpu } from 'lucide-svelte';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { currentEnvironment, appendEnvParam, environments } from '$lib/stores/environment';
@@ -1189,6 +1189,57 @@
 											{/if}
 										</div>
 									{/each}
+								</div>
+							</div>
+						{/if}
+
+						<!-- GPU / Device Requests -->
+						{#if containerData.HostConfig?.DeviceRequests?.length > 0 || (containerData.HostConfig?.Runtime && containerData.HostConfig.Runtime !== 'runc')}
+							<div class="space-y-2">
+								<h3 class="text-sm font-semibold flex items-center gap-2">
+									<Gpu class="w-4 h-4" />
+									GPU
+								</h3>
+								<div class="grid grid-cols-2 lg:grid-cols-3 gap-3">
+									{#if containerData.HostConfig?.Runtime}
+										<div class="p-3 border border-border rounded-lg">
+											<p class="text-xs text-muted-foreground mb-1">Runtime</p>
+											<code class="text-sm">{containerData.HostConfig.Runtime}</code>
+										</div>
+									{/if}
+									{#if containerData.HostConfig?.DeviceRequests?.length > 0}
+										{@const req = containerData.HostConfig.DeviceRequests[0]}
+										<div class="p-3 border border-border rounded-lg">
+											<p class="text-xs text-muted-foreground mb-1">Count</p>
+											<code class="text-sm">{req.Count === -1 ? 'All' : req.Count}</code>
+										</div>
+										{#if req.Driver}
+											<div class="p-3 border border-border rounded-lg">
+												<p class="text-xs text-muted-foreground mb-1">Driver</p>
+												<code class="text-sm">{req.Driver}</code>
+											</div>
+										{/if}
+										{#if req.DeviceIDs?.length > 0}
+											<div class="p-3 border border-border rounded-lg col-span-full">
+												<p class="text-xs text-muted-foreground mb-1">Device IDs</p>
+												<div class="flex flex-wrap gap-1.5">
+													{#each req.DeviceIDs as id}
+														<Badge variant="secondary" class="text-2xs">{id}</Badge>
+													{/each}
+												</div>
+											</div>
+										{/if}
+										{#if req.Capabilities?.length > 0}
+											<div class="p-3 border border-border rounded-lg col-span-full">
+												<p class="text-xs text-muted-foreground mb-1">Capabilities</p>
+												<div class="flex flex-wrap gap-1.5">
+													{#each req.Capabilities.flat() as cap}
+														<Badge variant="outline" class="text-2xs bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400">{cap}</Badge>
+													{/each}
+												</div>
+											</div>
+										{/if}
+									{/if}
 								</div>
 							</div>
 						{/if}

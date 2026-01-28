@@ -11,7 +11,7 @@
 	import { Label } from '$lib/components/ui/label';
 	import { Badge } from '$lib/components/ui/badge';
 	import CreateContainerModal from '../containers/CreateContainerModal.svelte';
-	import ImagePullModal from './ImagePullModal.svelte';
+	import ImagePullModal from '$lib/components/ImagePullModal.svelte';
 	import CopyToRegistryModal from './CopyToRegistryModal.svelte';
 	import { canAccess } from '$lib/stores/auth';
 	import { currentEnvironment, appendEnvParam } from '$lib/stores/environment';
@@ -806,4 +806,10 @@
 <CreateContainerModal bind:open={showRunModal} prefilledImage={runImageName} autoPull={true} />
 
 <!-- Pull/Scan Modal -->
-<ImagePullModal bind:open={showPullModal} imageName={pullImageName} envHasScanning={envHasScanning} />
+<ImagePullModal
+	bind:open={showPullModal}
+	imageName={pullImageName}
+	envId={$currentEnvironment?.id}
+	envHasScanning={envHasScanning}
+	showDeleteButton={true}
+/>

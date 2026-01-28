@@ -382,14 +382,16 @@ export async function getUserThemePreferences(userId: number): Promise<{
 	fontSize: string;
 	gridFontSize: string;
 	terminalFont: string;
+	editorFont: string;
 }> {
-	const [lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont] = await Promise.all([
+	const [lightTheme, darkTheme, font, fontSize, gridFontSize, terminalFont, editorFont] = await Promise.all([
 		getUserSetting(userId, 'light_theme'),
 		getUserSetting(userId, 'dark_theme'),
 		getUserSetting(userId, 'font'),
 		getUserSetting(userId, 'font_size'),
 		getUserSetting(userId, 'grid_font_size'),
-		getUserSetting(userId, 'terminal_font')
+		getUserSetting(userId, 'terminal_font'),
+		getUserSetting(userId, 'editor_font')
 	]);
 	return {
 		lightTheme: lightTheme || 'default',
@@ -397,13 +399,14 @@ export async function getUserThemePreferences(userId: number): Promise<{
 		font: font || 'system',
 		fontSize: fontSize || 'normal',
 		gridFontSize: gridFontSize || 'normal',
-		terminalFont: terminalFont || 'system-mono'
+		terminalFont: terminalFont || 'system-mono',
+		editorFont: editorFont || 'system-mono'
 	};
 }
 
 export async function setUserThemePreferences(
 	userId: number,
-	prefs: { lightTheme?: string; darkTheme?: string; font?: string; fontSize?: string; gridFontSize?: string; terminalFont?: string }
+	prefs: { lightTheme?: string; darkTheme?: string; font?: string; fontSize?: string; gridFontSize?: string; terminalFont?: string; editorFont?: string }
 ): Promise<void> {
 	const updates: Promise<void>[] = [];
 	if (prefs.lightTheme !== undefined) {
@@ -423,6 +426,9 @@ export async function setUserThemePreferences(
 	}
 	if (prefs.terminalFont !== undefined) {
 		updates.push(setUserSetting(userId, 'terminal_font', prefs.terminalFont));
+	}
+	if (prefs.editorFont !== undefined) {
+		updates.push(setUserSetting(userId, 'editor_font', prefs.editorFont));
 	}
 	await Promise.all(updates);
 }
@@ -803,6 +809,8 @@ export const NOTIFICATION_EVENT_TYPES = [
 	{ id: 'environment_offline', label: 'Environment offline', description: 'Environment became unreachable', group: 'system', scope: 'environment' },
 	{ id: 'environment_online', label: 'Environment online', description: 'Environment came back online', group: 'system', scope: 'environment' },
 	{ id: 'disk_space_warning', label: 'Disk space warning', description: 'Docker disk usage exceeds threshold', group: 'system', scope: 'environment' },
+	{ id: 'image_prune_success', label: 'Image prune success', description: 'Scheduled image prune completed successfully', group: 'system', scope: 'environment' },
+	{ id: 'image_prune_failed', label: 'Image prune failed', description: 'Scheduled image prune failed', group: 'system', scope: 'environment' },
 	{ id: 'license_expiring', label: 'License expiring', description: 'Enterprise license expiring soon (global)', group: 'system', scope: 'system' }
 ] as const;
 
@@ -2941,7 +2949,8 @@ export type AuditAction =
 
 export type AuditEntityType =
 	| 'container' | 'image' | 'stack' | 'volume' | 'network'
-	| 'user' | 'settings' | 'environment' | 'registry';
+	| 'user' | 'role' | 'settings' | 'environment' | 'registry' | 'git_repository' | 'git_credential'
+	| 'config_set' | 'notification' | 'oidc_provider' | 'ldap_config' | 'git_stack';
 
 export interface AuditLogData {
 	id: number;
@@ -4153,6 +4162,68 @@ export async function getAllEnvUpdateCheckSettings(): Promise<Array<{ envId: num
 			if (config.enabled) {
 				results.push({ envId, settings: config });
 			}
+		} catch {
+			// Skip invalid entries
+		}
+	}
+	return results;
+}
+
+// =============================================================================
+// IMAGE PRUNE SCHEDULE SETTINGS
+// =============================================================================
+
+export interface ImagePruneSettings {
+	enabled: boolean;
+	cronExpression: string;
+	pruneMode: 'dangling' | 'all';
+	lastPruned?: string;
+	lastResult?: {
+		spaceReclaimed: number;
+		imagesRemoved: number;
+	};
+}
+
+export async function getImagePruneSettings(envId: number): Promise<ImagePruneSettings | null> {
+	const key = `env_${envId}_image_prune`;
+	const result = await db.select().from(settings).where(eq(settings.key, key));
+	if (!result[0]) return null;
+	try {
+		return JSON.parse(result[0].value);
+	} catch {
+		return null;
+	}
+}
+
+export async function setImagePruneSettings(envId: number, config: ImagePruneSettings): Promise<void> {
+	const key = `env_${envId}_image_prune`;
+	const value = JSON.stringify(config);
+	const existing = await db.select().from(settings).where(eq(settings.key, key));
+	if (existing.length > 0) {
+		await db.update(settings)
+			.set({ value, updatedAt: new Date().toISOString() })
+			.where(eq(settings.key, key));
+	} else {
+		await db.insert(settings).values({ key, value });
+	}
+}
+
+export async function deleteImagePruneSettings(envId: number): Promise<void> {
+	const key = `env_${envId}_image_prune`;
+	await db.delete(settings).where(eq(settings.key, key));
+}
+
+export async function getAllImagePruneSettings(): Promise<Array<{ envId: number; settings: ImagePruneSettings }>> {
+	const rows = await db.select().from(settings).where(sql`${settings.key} LIKE 'env_%_image_prune'`);
+	const results: Array<{ envId: number; settings: ImagePruneSettings }> = [];
+	for (const row of rows) {
+		try {
+			const match = row.key.match(/^env_(\d+)_image_prune$/);
+			if (!match) continue;
+			const envId = parseInt(match[1]);
+			const config = JSON.parse(row.value) as ImagePruneSettings;
+			// Return all settings, not just enabled ones (UI needs to show disabled schedules too)
+			results.push({ envId, settings: config });
 		} catch {
 			// Skip invalid entries
 		}

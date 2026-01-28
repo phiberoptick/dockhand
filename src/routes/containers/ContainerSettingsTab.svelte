@@ -5,7 +5,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { TogglePill, ToggleGroup } from '$lib/components/ui/toggle-pill';
-	import { Plus, Trash2, Settings2, RefreshCw, Network, X, Ban, RotateCw, AlertTriangle, PauseCircle, Share2, Server, CircleOff, ChevronDown, ChevronRight, Cpu, Shield, HeartPulse, Wifi, HardDrive, Lock, Loader2, CheckCircle2, Package } from 'lucide-svelte';
+	import { Plus, Trash2, Settings2, RefreshCw, Network, X, Ban, RotateCw, AlertTriangle, PauseCircle, Share2, Server, CircleOff, ChevronDown, ChevronRight, Cpu, Shield, HeartPulse, Wifi, HardDrive, Lock, Loader2, CheckCircle2, Package, Gpu } from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import AutoUpdateSettings from './AutoUpdateSettings.svelte';
 	import type { VulnerabilityCriteria } from '$lib/components/VulnerabilityCriteriaSelector.svelte';
@@ -39,6 +39,8 @@
 	];
 
 	const commonUlimits = ['nofile', 'nproc', 'core', 'memlock', 'stack', 'cpu', 'fsize', 'locks'];
+
+	const commonGpuCapabilities = ['gpu', 'compute', 'utility', 'graphics', 'video', 'display'];
 
 	interface ConfigSet {
 		id: number;
@@ -104,6 +106,14 @@
 		securityOptions: string[];
 		// Devices
 		deviceMappings: { hostPath: string; containerPath: string; permissions: string }[];
+		// GPU settings
+		gpuEnabled: boolean;
+		gpuMode: 'all' | 'count' | 'specific';
+		gpuCount: number;
+		gpuDeviceIds: string[];
+		gpuDriver: string;
+		gpuCapabilities: string[];
+		runtime: string;
 		// DNS settings
 		dnsServers: string[];
 		dnsSearch: string[];
@@ -166,6 +176,13 @@
 		capDrop = $bindable(),
 		securityOptions = $bindable(),
 		deviceMappings = $bindable(),
+		gpuEnabled = $bindable(),
+		gpuMode = $bindable(),
+		gpuCount = $bindable(),
+		gpuDeviceIds = $bindable(),
+		gpuDriver = $bindable(),
+		gpuCapabilities = $bindable(),
+		runtime = $bindable(),
 		dnsServers = $bindable(),
 		dnsSearch = $bindable(),
 		dnsOptions = $bindable(),
@@ -187,6 +204,7 @@
 	let showHealth = $state(false);
 	let showDns = $state(false);
 	let showDevices = $state(false);
+	let showGpu = $state(false);
 	let showUlimits = $state(false);
 
 	// DNS input fields
@@ -196,6 +214,10 @@
 
 	// Security options input
 	let securityOptionInput = $state('');
+
+	// GPU device ID input
+	let gpuDeviceIdInput = $state('');
+	let customRuntimeInput = $state('');
 
 	// Helper functions for form
 	function addPortMapping() {
@@ -254,6 +276,27 @@
 
 	function removeUlimit(index: number) {
 		ulimits = ulimits.filter((_, i) => i !== index);
+	}
+
+	function addGpuDeviceId() {
+		if (gpuDeviceIdInput.trim() && !gpuDeviceIds.includes(gpuDeviceIdInput.trim())) {
+			gpuDeviceIds = [...gpuDeviceIds, gpuDeviceIdInput.trim()];
+			gpuDeviceIdInput = '';
+		}
+	}
+
+	function removeGpuDeviceId(id: string) {
+		gpuDeviceIds = gpuDeviceIds.filter(d => d !== id);
+	}
+
+	function addGpuCapability(cap: string) {
+		if (cap && !gpuCapabilities.includes(cap)) {
+			gpuCapabilities = [...gpuCapabilities, cap];
+		}
+	}
+
+	function removeGpuCapability(cap: string) {
+		gpuCapabilities = gpuCapabilities.filter(c => c !== cap);
 	}
 
 	function addCapability(type: 'add' | 'drop', cap: string) {
@@ -1206,6 +1249,146 @@
 						</Button>
 					</div>
 				{/each}
+			</div>
+		{/if}
+	</div>
+
+	<!-- GPU Section (Collapsible) -->
+	<div class="border rounded-lg">
+		<button
+			type="button"
+			onclick={() => showGpu = !showGpu}
+			class="w-full flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
+		>
+			<div class="flex items-center gap-2">
+				<Gpu class="w-4 h-4 text-muted-foreground" />
+				<span class="text-sm font-medium">GPU</span>
+				{#if gpuEnabled}
+					<Badge variant="secondary" class="text-2xs">configured</Badge>
+				{/if}
+			</div>
+			{#if showGpu}
+				<ChevronDown class="w-4 h-4 text-muted-foreground" />
+			{:else}
+				<ChevronRight class="w-4 h-4 text-muted-foreground" />
+			{/if}
+		</button>
+		{#if showGpu}
+			<div class="px-3 pb-3 space-y-3 border-t">
+				<div class="flex items-center justify-between pt-2">
+					<Label class="text-xs font-medium">Enable GPU access</Label>
+					<TogglePill bind:checked={gpuEnabled} />
+				</div>
+
+				<div class="space-y-1.5">
+					<Label class="text-xs font-medium">Runtime</Label>
+					<div class="flex gap-2">
+						<Select.Root type="single" value={runtime === '' ? '' : runtime === 'nvidia' ? 'nvidia' : 'custom'} onValueChange={(v) => {
+							if (v === '') runtime = '';
+							else if (v === 'nvidia') runtime = 'nvidia';
+							else if (v === 'custom') runtime = customRuntimeInput || '';
+						}}>
+							<Select.Trigger class="h-9 flex-1">
+								<span>{runtime === '' ? 'Default (runc)' : runtime === 'nvidia' ? 'NVIDIA' : `Custom: ${runtime}`}</span>
+							</Select.Trigger>
+							<Select.Content>
+								<Select.Item value="" label="Default (runc)" />
+								<Select.Item value="nvidia" label="NVIDIA" />
+								<Select.Item value="custom" label="Custom..." />
+							</Select.Content>
+						</Select.Root>
+						{#if runtime !== '' && runtime !== 'nvidia'}
+							<Input
+								bind:value={customRuntimeInput}
+								placeholder="Runtime name"
+								class="h-9 w-40"
+								oninput={() => { runtime = customRuntimeInput; }}
+							/>
+						{/if}
+					</div>
+				</div>
+
+				{#if gpuEnabled}
+					<div class="space-y-1.5">
+						<Label class="text-xs font-medium">GPU mode</Label>
+						<ToggleGroup
+							value={gpuMode}
+							options={[
+								{ value: 'all', label: 'All' },
+								{ value: 'count', label: 'Count' },
+								{ value: 'specific', label: 'Specific' }
+							]}
+							onchange={(v) => { gpuMode = v as 'all' | 'count' | 'specific'; }}
+						/>
+					</div>
+
+					{#if gpuMode === 'count'}
+						<div class="space-y-1.5">
+							<Label class="text-xs font-medium">GPU count</Label>
+							<Input type="number" bind:value={gpuCount} min="1" placeholder="1" class="h-9 w-24" />
+						</div>
+					{/if}
+
+					{#if gpuMode === 'specific'}
+						<div class="space-y-2">
+							<Label class="text-xs font-medium">Device IDs</Label>
+							<div class="flex gap-2">
+								<Input
+									bind:value={gpuDeviceIdInput}
+									placeholder="e.g., 0, GPU-xxxx"
+									class="h-9 flex-1"
+									onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addGpuDeviceId(); } }}
+								/>
+								<Button type="button" size="sm" variant="outline" onclick={addGpuDeviceId} class="h-9">
+									<Plus class="w-4 h-4" />
+								</Button>
+							</div>
+							{#if gpuDeviceIds.length > 0}
+								<div class="flex flex-wrap gap-1.5">
+									{#each gpuDeviceIds as id}
+										<Badge variant="secondary" class="text-2xs">
+											{id}
+											<button type="button" onclick={() => removeGpuDeviceId(id)} class="ml-1 hover:text-destructive">
+												<X class="w-3 h-3" />
+											</button>
+										</Badge>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					{/if}
+
+					<div class="space-y-1.5">
+						<Label class="text-xs font-medium">Driver</Label>
+						<Input bind:value={gpuDriver} placeholder="nvidia" class="h-9" />
+					</div>
+
+					<div class="space-y-2">
+						<Label class="text-xs font-medium">Capabilities</Label>
+						<Select.Root type="single" value="" onValueChange={(v) => { addGpuCapability(v); }}>
+							<Select.Trigger class="h-9">
+								<span class="text-muted-foreground">Add capability...</span>
+							</Select.Trigger>
+							<Select.Content>
+								{#each commonGpuCapabilities.filter(c => !gpuCapabilities.includes(c)) as cap}
+									<Select.Item value={cap} label={cap} />
+								{/each}
+							</Select.Content>
+						</Select.Root>
+						{#if gpuCapabilities.length > 0}
+							<div class="flex flex-wrap gap-1.5">
+								{#each gpuCapabilities as cap}
+									<Badge variant="outline" class="text-2xs bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400">
+										{cap}
+										<button type="button" onclick={() => removeGpuCapability(cap)} class="ml-1 hover:text-destructive">
+											<X class="w-3 h-3" />
+										</button>
+									</Badge>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				{/if}
 			</div>
 		{/if}
 	</div>

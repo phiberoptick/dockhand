@@ -1299,9 +1299,312 @@ export async function createContainer(options: CreateContainerOptions, envId?: n
 	return { id: result.Id, start: () => startContainer(result.Id, envId) };
 }
 
-export async function updateContainer(id: string, options: CreateContainerOptions, startAfterUpdate = false, envId?: number | null) {
+/**
+ * Extract all container options from Docker inspect data.
+ * This preserves ALL container settings for recreation.
+ * Used by both updateContainer and recreateContainer to ensure consistency.
+ */
+export function extractContainerOptions(inspectData: any): CreateContainerOptions {
+	const config = inspectData.Config;
+	const hostConfig = inspectData.HostConfig;
+	const name = inspectData.Name?.replace(/^\//, '') || '';
+
+	// Port bindings - preserve all host port mappings including HostIp
+	const ports: { [key: string]: { HostIp?: string; HostPort: string } } = {};
+	if (hostConfig.PortBindings) {
+		for (const [containerPort, bindings] of Object.entries(hostConfig.PortBindings)) {
+			if (bindings && (bindings as any[]).length > 0) {
+				const binding = (bindings as any[])[0];
+				ports[containerPort] = {
+					HostPort: binding.HostPort || ''
+				};
+				// Preserve HostIp if specified (e.g., '192.168.0.250:80:80' in compose)
+				if (binding.HostIp) {
+					ports[containerPort].HostIp = binding.HostIp;
+				}
+			}
+		}
+	}
+
+	// Volume bindings - preserve ALL volumes including anonymous volumes
+	const volumeBinds: string[] = [];
+	const mountedPaths = new Set<string>();
+
+	// First, add all entries from hostConfig.Binds (named volumes and bind mounts)
+	if (hostConfig.Binds && Array.isArray(hostConfig.Binds)) {
+		for (const bind of hostConfig.Binds) {
+			volumeBinds.push(bind);
+			const parts = bind.split(':');
+			if (parts.length >= 2) {
+				mountedPaths.add(parts[1].split(':')[0]);
+			}
+		}
+	}
+
+	// Then, add anonymous volumes from Mounts that aren't already in Binds
+	const mounts = inspectData.Mounts || [];
+	for (const mount of mounts) {
+		if (mount.Type === 'volume' && mount.Name && mount.Destination) {
+			if (!mountedPaths.has(mount.Destination)) {
+				const bindStr = mount.RW === false
+					? `${mount.Name}:${mount.Destination}:ro`
+					: `${mount.Name}:${mount.Destination}`;
+				volumeBinds.push(bindStr);
+			}
+		}
+	}
+
+	// Healthcheck configuration
+	let healthcheck: HealthcheckConfig | undefined = undefined;
+	if (config.Healthcheck && config.Healthcheck.Test && config.Healthcheck.Test.length > 0) {
+		if (config.Healthcheck.Test[0] !== 'NONE') {
+			healthcheck = {
+				test: config.Healthcheck.Test,
+				interval: config.Healthcheck.Interval,
+				timeout: config.Healthcheck.Timeout,
+				retries: config.Healthcheck.Retries,
+				startPeriod: config.Healthcheck.StartPeriod
+			};
+		}
+	}
+
+	// Device mappings
+	const devices = (hostConfig.Devices || []).map((d: any) => ({
+		hostPath: d.PathOnHost || '',
+		containerPath: d.PathInContainer || '',
+		permissions: d.CgroupPermissions || 'rwm'
+	})).filter((d: any) => d.hostPath && d.containerPath);
+
+	// Ulimits
+	const ulimits = (hostConfig.Ulimits || []).map((u: any) => ({
+		name: u.Name,
+		soft: u.Soft,
+		hard: u.Hard
+	}));
+
+	// Extract network settings
+	const networkSettings = inspectData.NetworkSettings?.Networks || {};
+	const primaryNetwork = hostConfig.NetworkMode || 'bridge';
+
+	// Extract primary network aliases, static IP, and gateway priority
+	let networkAliases: string[] | undefined;
+	let networkIpv4Address: string | undefined;
+	let networkIpv6Address: string | undefined;
+	let macAddress: string | undefined;
+	let networkGwPriority: number | undefined;
+
+	const containerId = inspectData.Id || '';
+	const shortContainerId = containerId.substring(0, 12);
+
+	// Extract compose labels for alias reconstruction
+	const composeProject = config.Labels?.['com.docker.compose.project'];
+	const composeService = config.Labels?.['com.docker.compose.service'];
+
+	for (const [netName, netConfig] of Object.entries(networkSettings)) {
+		const netConf = netConfig as any;
+		const isPrimary = netName === primaryNetwork ||
+			(primaryNetwork === 'bridge' && (netName === 'bridge' || netName === 'default'));
+
+		if (isPrimary) {
+			// Filter out auto-generated container IDs
+			const allAliases = (netConf.Aliases?.length > 0 ? netConf.Aliases : netConf.DNSNames) || [];
+			networkAliases = allAliases.filter((a: string) =>
+				a !== containerId && a !== shortContainerId
+			);
+
+			// For compose containers, ensure service name and project-service aliases
+			if (composeProject && composeService) {
+				if (!networkAliases) networkAliases = [];
+				if (!networkAliases.includes(composeService)) {
+					networkAliases.push(composeService);
+				}
+				const projectService = `${composeProject}-${composeService}`;
+				if (!networkAliases.includes(projectService)) {
+					networkAliases.push(projectService);
+				}
+			}
+
+			if (!networkAliases || networkAliases.length === 0) {
+				networkAliases = undefined;
+			}
+
+			networkIpv4Address = netConf.IPAMConfig?.IPv4Address || undefined;
+			networkIpv6Address = netConf.IPAMConfig?.IPv6Address || undefined;
+			macAddress = netConf.MacAddress || undefined;
+			networkGwPriority = netConf.GwPriority !== undefined && netConf.GwPriority !== 0
+				? netConf.GwPriority : undefined;
+			break;
+		}
+	}
+
+	// Device requests (GPU, etc.)
+	const deviceRequests = hostConfig.DeviceRequests?.length > 0
+		? hostConfig.DeviceRequests.map((dr: any) => ({
+			driver: dr.Driver || undefined,
+			count: dr.Count,
+			deviceIDs: dr.DeviceIDs?.length > 0 ? dr.DeviceIDs : undefined,
+			capabilities: dr.Capabilities?.length > 0 ? dr.Capabilities : undefined,
+			options: dr.Options && Object.keys(dr.Options).length > 0 ? dr.Options : undefined
+		}))
+		: undefined;
+
+	return {
+		name,
+		image: config.Image,
+
+		// Command and entrypoint
+		cmd: config.Cmd || undefined,
+		entrypoint: config.Entrypoint || undefined,
+		workingDir: config.WorkingDir || undefined,
+
+		// Environment and labels
+		env: config.Env || [],
+		labels: config.Labels || {},
+
+		// Port mappings
+		ports: Object.keys(ports).length > 0 ? ports : undefined,
+
+		// Volume bindings
+		volumeBinds: volumeBinds.length > 0 ? volumeBinds : undefined,
+
+		// Restart policy
+		restartPolicy: hostConfig.RestartPolicy?.Name || 'no',
+		restartMaxRetries: hostConfig.RestartPolicy?.MaximumRetryCount,
+
+		// Network settings
+		networkMode: hostConfig.NetworkMode || undefined,
+		networkAliases,
+		networkIpv4Address,
+		networkIpv6Address,
+		networkGwPriority,
+
+		// User and hostname
+		user: config.User || undefined,
+		hostname: config.Hostname || undefined,
+		domainname: config.Domainname || undefined,
+
+		// Privileged mode
+		privileged: hostConfig.Privileged || undefined,
+
+		// Healthcheck
+		healthcheck,
+
+		// Terminal settings
+		tty: config.Tty || undefined,
+		stdinOpen: config.OpenStdin || undefined,
+
+		// Memory limits
+		memory: hostConfig.Memory || undefined,
+		memoryReservation: hostConfig.MemoryReservation || undefined,
+		memorySwap: hostConfig.MemorySwap || undefined,
+
+		// CPU limits
+		cpuShares: hostConfig.CpuShares || undefined,
+		cpuQuota: hostConfig.CpuQuota || undefined,
+		cpuPeriod: hostConfig.CpuPeriod || undefined,
+		nanoCpus: hostConfig.NanoCpus || undefined,
+
+		// Capabilities
+		capAdd: hostConfig.CapAdd?.length > 0 ? hostConfig.CapAdd : undefined,
+		capDrop: hostConfig.CapDrop?.length > 0 ? hostConfig.CapDrop : undefined,
+
+		// Devices
+		devices: devices.length > 0 ? devices : undefined,
+
+		// DNS settings
+		dns: hostConfig.Dns?.length > 0 ? hostConfig.Dns : undefined,
+		dnsSearch: hostConfig.DnsSearch?.length > 0 ? hostConfig.DnsSearch : undefined,
+		dnsOptions: hostConfig.DnsOptions?.length > 0 ? hostConfig.DnsOptions : undefined,
+
+		// Security options
+		securityOpt: hostConfig.SecurityOpt?.length > 0 ? hostConfig.SecurityOpt : undefined,
+
+		// Ulimits
+		ulimits: ulimits.length > 0 ? ulimits : undefined,
+
+		// Process and memory settings
+		oomKillDisable: hostConfig.OomKillDisable || undefined,
+		pidsLimit: hostConfig.PidsLimit || undefined,
+		shmSize: hostConfig.ShmSize || undefined,
+
+		// Tmpfs mounts
+		tmpfs: hostConfig.Tmpfs && Object.keys(hostConfig.Tmpfs).length > 0 ? hostConfig.Tmpfs : undefined,
+
+		// Sysctls
+		sysctls: hostConfig.Sysctls && Object.keys(hostConfig.Sysctls).length > 0 ? hostConfig.Sysctls : undefined,
+
+		// Logging configuration
+		logDriver: hostConfig.LogConfig?.Type || undefined,
+		logOptions: hostConfig.LogConfig?.Config && Object.keys(hostConfig.LogConfig.Config).length > 0
+			? hostConfig.LogConfig.Config : undefined,
+
+		// Namespace settings
+		ipcMode: hostConfig.IpcMode || undefined,
+		pidMode: hostConfig.PidMode || undefined,
+		utsMode: hostConfig.UTSMode || undefined,
+
+		// Cgroup parent
+		cgroupParent: hostConfig.CgroupParent || undefined,
+
+		// Stop signal and timeout
+		stopSignal: config.StopSignal || undefined,
+		stopTimeout: config.StopTimeout || undefined,
+
+		// Init process
+		init: hostConfig.Init === true ? true : undefined,
+
+		// MAC address
+		macAddress,
+
+		// Extra hosts
+		extraHosts: hostConfig.ExtraHosts?.length > 0 ? hostConfig.ExtraHosts : undefined,
+
+		// Device requests (GPU)
+		deviceRequests,
+
+		// Container runtime
+		runtime: hostConfig.Runtime && hostConfig.Runtime !== 'runc' ? hostConfig.Runtime : undefined,
+
+		// Read-only root filesystem
+		readonlyRootfs: hostConfig.ReadonlyRootfs === true ? true : undefined,
+
+		// CPU pinning
+		cpusetCpus: hostConfig.CpusetCpus || undefined,
+		cpusetMems: hostConfig.CpusetMems || undefined,
+
+		// Additional groups
+		groupAdd: hostConfig.GroupAdd?.length > 0 ? hostConfig.GroupAdd : undefined,
+
+		// Memory swappiness
+		memorySwappiness: hostConfig.MemorySwappiness !== null ? hostConfig.MemorySwappiness : undefined,
+
+		// User namespace mode
+		usernsMode: hostConfig.UsernsMode || undefined
+	};
+}
+
+/**
+ * Update a container by recreating it with merged options.
+ * Preserves ALL existing container settings and merges user-provided options on top.
+ */
+export async function updateContainer(id: string, options: Partial<CreateContainerOptions>, startAfterUpdate = false, envId?: number | null) {
 	const oldContainerInfo = await inspectContainer(id, envId);
 	const wasRunning = oldContainerInfo.State.Running;
+
+	// Extract ALL existing container options
+	const existingOptions = extractContainerOptions(oldContainerInfo);
+
+	// Merge user-provided options on top of existing options
+	// User options take precedence, but we preserve everything not explicitly provided
+	const mergedOptions: CreateContainerOptions = {
+		...existingOptions,
+		...options,
+		// Special handling for labels - merge instead of replace to preserve Docker internal labels
+		labels: {
+			...existingOptions.labels,
+			...options.labels
+		}
+	};
 
 	if (wasRunning) {
 		await stopContainer(id, envId);
@@ -1309,7 +1612,7 @@ export async function updateContainer(id: string, options: CreateContainerOption
 
 	await removeContainer(id, true, envId);
 
-	const newContainer = await createContainer(options, envId);
+	const newContainer = await createContainer(mergedOptions, envId);
 
 	if (startAfterUpdate || wasRunning) {
 		await newContainer.start();
@@ -2746,6 +3049,7 @@ export async function runContainerWithStreaming(options: {
 	binds?: string[];
 	env?: string[];
 	name?: string;
+	user?: string;
 	envId?: number | null;
 	onStdout?: (data: string) => void;
 	onStderr?: (data: string) => void;
@@ -2764,6 +3068,11 @@ export async function runContainerWithStreaming(options: {
 			AutoRemove: false
 		}
 	};
+
+	// Set user if specified (needed for rootless Docker socket access)
+	if (options.user) {
+		containerConfig.User = options.user;
+	}
 
 	const createResult = await dockerJsonRequest<{ Id: string }>(
 		`/containers/create?name=${encodeURIComponent(containerName)}`,

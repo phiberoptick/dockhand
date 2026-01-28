@@ -7,6 +7,7 @@ import {
 	getGitStack,
 	updateGitStack,
 	upsertStackSource,
+	getEnvironment,
 	type GitRepository,
 	type GitCredential,
 	type GitStackWithRepo
@@ -14,7 +15,8 @@ import {
 import { deployStack, getStackDir } from './stacks';
 
 // Directory for storing cloned repositories
-const GIT_REPOS_DIR = process.env.GIT_REPOS_DIR || './data/git-repos';
+const dataDir = process.env.DATA_DIR || './data';
+const GIT_REPOS_DIR = resolve(process.env.GIT_REPOS_DIR || join(dataDir, 'git-repos'));
 
 // Ensure git repos directory exists
 if (!existsSync(GIT_REPOS_DIR)) {
@@ -544,7 +546,21 @@ export function deleteRepositoryFiles(repoId: number): void {
 
 // === Git Stack Functions ===
 
-function getStackRepoPath(stackId: number): string {
+async function getStackRepoPath(stackId: number, stackName?: string, environmentId?: number | null): Promise<string> {
+	if (stackName && environmentId) {
+		// Use old path if it already exists (backward compat), otherwise use name-based path
+		const oldPath = join(GIT_REPOS_DIR, `stack-${stackId}`);
+		if (existsSync(oldPath)) {
+			return oldPath;
+		}
+		// Format: envName/stackName (e.g. production/webapp) - consistent with internal stacks
+		const env = await getEnvironment(environmentId);
+		const envDir = join(GIT_REPOS_DIR, env ? env.name : String(environmentId));
+		if (!existsSync(envDir)) {
+			mkdirSync(envDir, { recursive: true });
+		}
+		return join(envDir, stackName);
+	}
 	return join(GIT_REPOS_DIR, `stack-${stackId}`);
 }
 
@@ -597,7 +613,7 @@ export async function syncGitStack(stackId: number): Promise<SyncResult> {
 	console.log(`${logPrefix} Repository branch:`, repo.branch);
 
 	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
-	const repoPath = getStackRepoPath(stackId);
+	const repoPath = await getStackRepoPath(stackId, gitStack.stackName, gitStack.environmentId);
 	const env = await buildGitEnv(credential);
 
 	console.log(`${logPrefix} Local repo path:`, repoPath);
@@ -818,14 +834,13 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 		};
 	}
 
-	const forceRecreate = syncResult.updated && !!gitStack.envFilePath;
-	console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated}, hasEnvFile=${!!gitStack.envFilePath})`);
+	const forceRecreate = syncResult.updated;
+	console.log(`${logPrefix} Will force recreate:`, forceRecreate, `(updated=${syncResult.updated})`);
 
 	// Deploy using unified function - handles both new and existing stacks
 	// Uses `docker compose up -d --remove-orphans` which only recreates changed services
-	// Force recreate when git detected changes AND stack has .env file configured
-	// This ensures containers pick up new env var values even if compose file didn't change
-	// Note: Without this, docker compose only detects compose file changes, not env var changes
+	// Force recreate whenever git detected changes to ensure containers pick up
+	// new env var values even if compose file itself didn't change
 	console.log(`${logPrefix} Calling deployStack...`);
 	console.log(`${logPrefix} Source directory (composeDir):`, syncResult.composeDir);
 	console.log(`${logPrefix} Compose filename:`, syncResult.composeFileName);
@@ -835,7 +850,6 @@ export async function deployGitStack(stackId: number, options?: { force?: boolea
 		name: gitStack.stackName,
 		compose: syncResult.composeContent!,
 		envId: gitStack.environmentId,
-		envFileVars: syncResult.envFileVars,
 		sourceDir: syncResult.composeDir, // Copy entire directory from git repo
 		composeFileName: syncResult.composeFileName, // Use original compose filename from repo
 		envFileName: syncResult.envFileName, // Env file relative to compose dir (for --env-file flag, optional)
@@ -923,8 +937,8 @@ export async function testGitStack(stackId: number): Promise<TestResult> {
 	}
 }
 
-export function deleteGitStackFiles(stackId: number): void {
-	const repoPath = getStackRepoPath(stackId);
+export async function deleteGitStackFiles(stackId: number, stackName?: string, environmentId?: number | null): Promise<void> {
+	const repoPath = await getStackRepoPath(stackId, stackName, environmentId);
 	try {
 		if (existsSync(repoPath)) {
 			rmSync(repoPath, { recursive: true, force: true });
@@ -967,7 +981,7 @@ export async function deployGitStackWithProgress(
 	}
 
 	const credential = repo.credentialId ? await getGitCredential(repo.credentialId) : null;
-	const repoPath = getStackRepoPath(stackId);
+	const repoPath = await getStackRepoPath(stackId, gitStack.stackName, gitStack.environmentId);
 	const env = await buildGitEnv(credential);
 
 	const totalSteps = 5;
@@ -1079,7 +1093,6 @@ export async function deployGitStackWithProgress(
 			name: gitStack.stackName,
 			compose: composeContent,
 			envId: gitStack.environmentId,
-			envFileVars,
 			sourceDir: composeDir // Copy entire directory from git repo
 		});
 
@@ -1124,7 +1137,7 @@ export async function listGitStackEnvFiles(stackId: number): Promise<{ files: st
 		return { files: [], error: 'Git stack not found' };
 	}
 
-	const repoPath = getStackRepoPath(stackId);
+	const repoPath = await getStackRepoPath(stackId, gitStack.stackName, gitStack.environmentId);
 	if (!existsSync(repoPath)) {
 		return { files: [], error: 'Repository not synced - deploy the stack first' };
 	}
@@ -1237,7 +1250,7 @@ export async function readGitStackEnvFile(
 		return { vars: {}, error: 'Git stack not found' };
 	}
 
-	const repoPath = getStackRepoPath(stackId);
+	const repoPath = await getStackRepoPath(stackId, gitStack.stackName, gitStack.environmentId);
 	if (!existsSync(repoPath)) {
 		return { vars: {}, error: 'Repository not synced - deploy the stack first' };
 	}
@@ -1260,5 +1273,128 @@ export async function readGitStackEnvFile(
 		return { vars };
 	} catch (error: any) {
 		return { vars: {}, error: error.message };
+	}
+}
+
+interface PreviewEnvOptions {
+	repoUrl: string;
+	branch: string;
+	credential: {
+		id: number;
+		authType: string;
+		sshPrivateKey?: string | null;
+		username?: string | null;
+		password?: string | null;
+	} | null;
+	composePath: string;
+	envFilePath: string | null;
+}
+
+interface PreviewEnvResult {
+	vars: Record<string, string>;
+	sources: Record<string, '.env' | 'envFile'>;
+	error?: string;
+}
+
+/**
+ * Clone a repository to a temp directory and read env files for preview.
+ * Used to populate env editor when creating a new git stack.
+ * Cleans up temp directory after reading.
+ */
+export async function previewRepoEnvFiles(options: PreviewEnvOptions): Promise<PreviewEnvResult> {
+	const { repoUrl, branch, credential, composePath, envFilePath } = options;
+	const logPrefix = '[Git:Preview]';
+
+	// Create a unique temp directory
+	const tempId = `preview-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+	const tempDir = join(GIT_REPOS_DIR, tempId);
+
+	console.log(`${logPrefix} Starting preview for ${repoUrl}`);
+	console.log(`${logPrefix} Temp directory: ${tempDir}`);
+
+	try {
+		// Ensure temp directory exists
+		mkdirSync(tempDir, { recursive: true });
+
+		// Build git environment with credentials
+		// Cast credential to GitCredential type (only uses id, authType, sshPrivateKey)
+		const env = await buildGitEnv(credential as GitCredential | null);
+		const authenticatedUrl = buildRepoUrl(repoUrl, credential as GitCredential | null);
+
+		// Clone with depth 1 (shallow clone for speed)
+		const cloneProc = Bun.spawn(
+			['git', 'clone', '--depth', '1', '--branch', branch, '--single-branch', authenticatedUrl, tempDir],
+			{
+				stdout: 'pipe',
+				stderr: 'pipe',
+				env
+			}
+		);
+
+		const cloneStderr = await new Response(cloneProc.stderr).text();
+		const cloneExitCode = await cloneProc.exited;
+
+		if (cloneExitCode !== 0) {
+			console.error(`${logPrefix} Clone failed:`, cloneStderr);
+			return { vars: {}, sources: {}, error: `Failed to clone repository: ${cloneStderr.trim()}` };
+		}
+
+		console.log(`${logPrefix} Clone successful`);
+
+		// Determine the compose directory (where .env file should be)
+		const composeDir = dirname(composePath);
+		const baseEnvPath = join(tempDir, composeDir, '.env');
+
+		const vars: Record<string, string> = {};
+		const sources: Record<string, '.env' | 'envFile'> = {};
+
+		// Read base .env file if it exists
+		if (existsSync(baseEnvPath)) {
+			console.log(`${logPrefix} Reading .env from: ${baseEnvPath}`);
+			const content = await Bun.file(baseEnvPath).text();
+			const baseVars = parseEnvFileContent(content, 'preview');
+			for (const [key, value] of Object.entries(baseVars)) {
+				vars[key] = value;
+				sources[key] = '.env';
+			}
+			console.log(`${logPrefix} Found ${Object.keys(baseVars).length} vars in .env`);
+		} else {
+			console.log(`${logPrefix} No .env file at ${baseEnvPath}`);
+		}
+
+		// Read additional env file if specified
+		if (envFilePath) {
+			const additionalEnvPath = join(tempDir, envFilePath);
+			if (existsSync(additionalEnvPath)) {
+				console.log(`${logPrefix} Reading additional env file: ${additionalEnvPath}`);
+				const content = await Bun.file(additionalEnvPath).text();
+				const additionalVars = parseEnvFileContent(content, 'preview');
+				for (const [key, value] of Object.entries(additionalVars)) {
+					vars[key] = value;
+					sources[key] = 'envFile';
+				}
+				console.log(`${logPrefix} Found ${Object.keys(additionalVars).length} vars in ${envFilePath}`);
+			} else {
+				console.log(`${logPrefix} Additional env file not found: ${additionalEnvPath}`);
+			}
+		}
+
+		console.log(`${logPrefix} Total variables: ${Object.keys(vars).length}`);
+
+		return { vars, sources };
+	} catch (error: any) {
+		console.error(`${logPrefix} Error:`, error);
+		return { vars: {}, sources: {}, error: error.message };
+	} finally {
+		// Always clean up temp directory
+		cleanupSshKey(credential as GitCredential | null);
+		try {
+			if (existsSync(tempDir)) {
+				rmSync(tempDir, { recursive: true, force: true });
+				console.log(`${logPrefix} Cleaned up temp directory`);
+			}
+		} catch (cleanupError) {
+			console.error(`${logPrefix} Failed to cleanup temp directory:`, cleanupError);
+		}
 	}
 }

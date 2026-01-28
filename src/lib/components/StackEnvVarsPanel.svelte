@@ -1,25 +1,27 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, type Snippet } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import StackEnvVarsEditor, { type EnvVar, type ValidationResult } from '$lib/components/StackEnvVarsEditor.svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
-	import { Plus, Info, Upload, Trash2, List, FileText, AlertTriangle, ShieldAlert } from 'lucide-svelte';
+	import { Plus, Upload, Trash2, List, FileText, AlertTriangle, ShieldAlert, HelpCircle } from 'lucide-svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 
 	interface Props {
 		variables: EnvVar[]; // Bindable - ALL variables (secrets + non-secrets)
-		rawContent: string; // Bindable - raw .env file content (comments preserved, no secrets)
+		rawContent?: string; // Bindable - raw .env file content (comments preserved, no secrets)
 		validation?: ValidationResult | null;
 		readonly?: boolean;
 		showSource?: boolean;
 		sources?: Record<string, 'file' | 'override'>;
+		fileValues?: Record<string, string>;
 		placeholder?: { key: string; value: string };
 		infoText?: string;
 		existingSecretKeys?: Set<string>;
 		theme?: 'light' | 'dark';
 		class?: string;
 		onchange?: () => void;
+		headerActions?: Snippet;
 	}
 
 	let {
@@ -29,12 +31,14 @@
 		readonly = false,
 		showSource = false,
 		sources = {},
+		fileValues = {},
 		placeholder = { key: 'VARIABLE_NAME', value: 'value' },
 		infoText,
 		existingSecretKeys = new Set<string>(),
 		theme = 'dark',
 		class: className = '',
-		onchange
+		onchange,
+		headerActions
 	}: Props = $props();
 
 	const STORAGE_KEY_VIEW_MODE = 'dockhand-env-vars-view-mode';
@@ -291,13 +295,13 @@
 			{#if infoText}
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<Info class="w-3.5 h-3.5 text-blue-400 shrink-0" />
+						<HelpCircle class="w-3.5 h-3.5 text-muted-foreground cursor-help shrink-0" />
 					</Tooltip.Trigger>
-					<Tooltip.Portal>
-						<Tooltip.Content side="bottom" sideOffset={8} class="max-w-xs w-64 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border-zinc-200 dark:border-zinc-700">
-							<p class="text-xs text-left">{infoText}</p>
-						</Tooltip.Content>
-					</Tooltip.Portal>
+					<Tooltip.Content>
+						<div class="w-64">
+							<p class="text-xs text-left">{@html infoText}</p>
+						</div>
+					</Tooltip.Content>
 				</Tooltip.Root>
 			{/if}
 			<!-- View mode toggle -->
@@ -343,6 +347,9 @@
 			<!-- Actions - right-aligned -->
 			{#if !readonly}
 				<div class="flex items-center gap-1 shrink-0">
+					{#if headerActions}
+						{@render headerActions()}
+					{/if}
 					<Button type="button" size="sm" variant="ghost" onclick={handleLoadFromFile} class="h-6 text-xs px-2">
 						<Upload class="w-3.5 h-3.5 mr-1" />
 						Load
@@ -445,6 +452,7 @@
 				{readonly}
 				{showSource}
 				{sources}
+				{fileValues}
 				{placeholder}
 				{existingSecretKeys}
 				{onchange}

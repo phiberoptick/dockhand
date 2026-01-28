@@ -45,11 +45,12 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			updatedAt: new Date().toISOString()
 		};
 
-		const success = await testNotification(setting);
+		const result = await testNotification(setting);
 
 		return json({
-			success,
-			message: success ? 'Test notification sent successfully' : 'Failed to send test notification'
+			success: result.success,
+			message: result.success ? 'Test notification sent successfully' : undefined,
+			error: result.error || (result.success ? undefined : 'Failed to send test notification')
 		});
 	} catch (error: any) {
 		console.error('Error testing notification:', error);

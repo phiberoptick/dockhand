@@ -51,6 +51,7 @@ RUN APKO_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") 
     "    - docker-compose" \
     "    - docker-cli-buildx" \
     "    - sqlite" \
+    "    - postgresql-client" \
     "    - git" \
     "    - openssh-client" \
     "    - curl" \

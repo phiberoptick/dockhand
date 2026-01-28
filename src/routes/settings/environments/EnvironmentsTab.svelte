@@ -63,6 +63,7 @@
 		updatedAt: string;
 		updateCheckEnabled?: boolean;
 		updateCheckAutoUpdate?: boolean;
+		imagePruneEnabled?: boolean;
 		timezone?: string;
 		hawserVersion?: string;
 	}
@@ -479,7 +480,12 @@
 											<Cpu class="w-4 h-4 text-sky-400 glow-sky" />
 										</span>
 									{/if}
-									{#if !env.updateCheckEnabled && !hasScannerEnabled && !env.collectActivity && !env.collectMetrics}
+									{#if env.imagePruneEnabled}
+										<span title="Automatic image pruning enabled">
+											<Trash2 class="w-4 h-4 text-amber-500 glow-amber" />
+										</span>
+									{/if}
+									{#if !env.updateCheckEnabled && !hasScannerEnabled && !env.collectActivity && !env.collectMetrics && !env.imagePruneEnabled}
 										<span class="text-muted-foreground text-xs">—</span>
 									{/if}
 								</div>

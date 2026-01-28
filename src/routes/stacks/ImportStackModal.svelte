@@ -6,6 +6,7 @@
 	import { Import, Loader2, Play, Info } from 'lucide-svelte';
 	import FilesystemBrowser, { type FileEntry } from './FilesystemBrowser.svelte';
 	import CodeEditor from '$lib/components/CodeEditor.svelte';
+	import yaml from 'js-yaml';
 	import { toast } from 'svelte-sonner';
 	import { currentEnvironment, environments } from '$lib/stores/environment';
 	import { getIconComponent } from '$lib/utils/icons';
@@ -83,11 +84,13 @@
 				const data = await res.json();
 				previewContent = data.content || '';
 				// Count services in the compose file
-				const serviceMatches = previewContent?.match(/^services:\s*\n((?:\s{2,}\w+:.*\n?)+)/m);
-				if (serviceMatches) {
-					const servicesBlock = serviceMatches[1];
-					const serviceNames = servicesBlock.match(/^\s{2}\w+:/gm);
-					previewServiceCount = serviceNames?.length || 0;
+				try {
+					const doc = yaml.load(previewContent) as Record<string, unknown> | null;
+					if (doc?.services && typeof doc.services === 'object') {
+						previewServiceCount = Object.keys(doc.services).length;
+					}
+				} catch {
+					previewServiceCount = 0;
 				}
 			}
 		} catch (e) {

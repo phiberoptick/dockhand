@@ -98,7 +98,7 @@
 		return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + sizes[i];
 	}
 
-	type SortField = 'name' | 'image' | 'state' | 'uptime' | 'stack' | 'ip' | 'cpu' | 'memory';
+	type SortField = 'name' | 'image' | 'state' | 'health' | 'uptime' | 'stack' | 'ip' | 'cpu' | 'memory';
 	type SortDirection = 'asc' | 'desc';
 
 	let containers = $state<ContainerInfo[]>([]);
@@ -700,6 +700,12 @@
 					const stateOrder = { running: 0, paused: 1, created: 2, exited: 3 };
 					cmp = (stateOrder[a.state.toLowerCase() as keyof typeof stateOrder] ?? 4) -
 						  (stateOrder[b.state.toLowerCase() as keyof typeof stateOrder] ?? 4);
+					break;
+				case 'health':
+					const healthOrder: Record<string, number> = { unhealthy: 0, starting: 1, healthy: 2 };
+					const healthA = a.health ? (healthOrder[a.health] ?? 1) : 3;
+					const healthB = b.health ? (healthOrder[b.health] ?? 1) : 3;
+					cmp = healthA - healthB;
 					break;
 				case 'uptime':
 					cmp = parseUptimeToSeconds(a.status) - parseUptimeToSeconds(b.status);

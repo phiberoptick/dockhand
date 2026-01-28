@@ -153,6 +153,15 @@
 	// Ulimits
 	let ulimits = $state<{ name: string; soft: string; hard: string }[]>([]);
 
+	// GPU settings
+	let gpuEnabled = $state(false);
+	let gpuMode = $state<'all' | 'count' | 'specific'>('all');
+	let gpuCount = $state(1);
+	let gpuDeviceIds = $state<string[]>([]);
+	let gpuDriver = $state('');
+	let gpuCapabilities = $state<string[]>(['gpu']);
+	let runtime = $state('');
+
 	// Auto-update settings
 	let autoUpdateEnabled = $state(false);
 	let autoUpdateCronExpression = $state('0 3 * * *');
@@ -195,11 +204,19 @@
 		dnsSearch: string[];
 		dnsOptions: string[];
 		ulimits: typeof ulimits;
+		gpuEnabled: boolean;
+		gpuMode: 'all' | 'count' | 'specific';
+		gpuCount: number;
+		gpuDeviceIds: string[];
+		gpuDriver: string;
+		gpuCapabilities: string[];
+		runtime: string;
 	} | null>(null);
 
 	// Compose container detection
 	let isComposeContainer = $state(false);
 	let composeStackName = $state('');
+
 
 	let originalAutoUpdate = $state<{
 		enabled: boolean;
@@ -386,7 +403,7 @@
 						})
 				: [{ key: '', value: '' }];
 
-			// Parse labels
+			// Parse labels - filter out com.docker.* labels for UI (they're preserved automatically by updateContainer)
 			const containerLabels = data.Config.Labels || {};
 			const labelEntries = Object.entries(containerLabels).filter(
 				([key]) => !key.startsWith('com.docker.')
@@ -483,6 +500,36 @@
 				hard: String(u.Hard || 0)
 			}));
 
+			// Parse GPU / Device Requests
+			const deviceReqs = data.HostConfig?.DeviceRequests || [];
+			if (deviceReqs.length > 0) {
+				gpuEnabled = true;
+				const firstReq = deviceReqs[0];
+				if (firstReq.DeviceIDs?.length > 0) {
+					gpuMode = 'specific';
+					gpuDeviceIds = [...firstReq.DeviceIDs];
+				} else if (firstReq.Count === -1) {
+					gpuMode = 'all';
+				} else {
+					gpuMode = 'count';
+					gpuCount = firstReq.Count || 1;
+				}
+				gpuCapabilities = firstReq.Capabilities?.length > 0
+					? firstReq.Capabilities.flat() : ['gpu'];
+				gpuDriver = firstReq.Driver || '';
+			} else {
+				gpuEnabled = false;
+				gpuMode = 'all';
+				gpuCount = 1;
+				gpuDeviceIds = [];
+				gpuDriver = '';
+				gpuCapabilities = ['gpu'];
+			}
+
+			// Parse runtime
+			runtime = (data.HostConfig?.Runtime && data.HostConfig.Runtime !== 'runc')
+				? data.HostConfig.Runtime : '';
+
 			// Fetch available networks and auto-update settings
 			await fetchNetworks();
 			await fetchAutoUpdateSettings(name);
@@ -521,7 +568,14 @@
 				dnsServers: [...dnsServers],
 				dnsSearch: [...dnsSearch],
 				dnsOptions: [...dnsOptions],
-				ulimits: JSON.parse(JSON.stringify(ulimits))
+				ulimits: JSON.parse(JSON.stringify(ulimits)),
+				gpuEnabled,
+				gpuMode,
+				gpuCount,
+				gpuDeviceIds: [...gpuDeviceIds],
+				gpuDriver,
+				gpuCapabilities: [...gpuCapabilities],
+				runtime
 			};
 		} catch (err) {
 			error = 'Failed to load container data: ' + String(err);
@@ -600,6 +654,15 @@
 		const currentUlimits = ulimits.filter(u => u.name && u.soft && u.hard);
 		const originalUlimits = originalConfig.ulimits.filter(u => u.name && u.soft && u.hard);
 		if (JSON.stringify(currentUlimits) !== JSON.stringify(originalUlimits)) return true;
+
+		// GPU settings
+		if (gpuEnabled !== originalConfig.gpuEnabled) return true;
+		if (gpuMode !== originalConfig.gpuMode) return true;
+		if (gpuCount !== originalConfig.gpuCount) return true;
+		if (JSON.stringify([...gpuDeviceIds].sort()) !== JSON.stringify([...originalConfig.gpuDeviceIds].sort())) return true;
+		if (gpuDriver !== originalConfig.gpuDriver) return true;
+		if (JSON.stringify([...gpuCapabilities].sort()) !== JSON.stringify([...originalConfig.gpuCapabilities].sort())) return true;
+		if (runtime !== originalConfig.runtime) return true;
 
 		return false;
 	}
@@ -801,6 +864,23 @@
 						hard: parseInt(u.hard) || 0
 					}));
 
+				let deviceRequests: any[] | undefined = undefined;
+				if (gpuEnabled) {
+					const dr: any = {
+						capabilities: gpuCapabilities.length > 0 ? [gpuCapabilities] : [['gpu']],
+						driver: gpuDriver || undefined
+					};
+					if (gpuMode === 'all') {
+						dr.count = -1;
+					} else if (gpuMode === 'count') {
+						dr.count = gpuCount || 1;
+					} else {
+						dr.count = 0;
+						dr.deviceIDs = gpuDeviceIds.filter(id => id.trim());
+					}
+					deviceRequests = [dr];
+				}
+
 				const payload = {
 					name: name.trim(),
 					image: image.trim(),
@@ -826,6 +906,8 @@
 					capAdd: capAdd.length > 0 ? capAdd : undefined,
 					capDrop: capDrop.length > 0 ? capDrop : undefined,
 					devices: devices.length > 0 ? devices : undefined,
+					deviceRequests,
+					runtime: runtime || undefined,
 					dns: dnsServers.length > 0 ? dnsServers : undefined,
 					dnsSearch: dnsSearch.length > 0 ? dnsSearch : undefined,
 					dnsOptions: dnsOptions.length > 0 ? dnsOptions : undefined,
@@ -997,6 +1079,13 @@
 					bind:capDrop
 					bind:securityOptions
 					bind:deviceMappings
+					bind:gpuEnabled
+					bind:gpuMode
+					bind:gpuCount
+					bind:gpuDeviceIds
+					bind:gpuDriver
+					bind:gpuCapabilities
+					bind:runtime
 					bind:dnsServers
 					bind:dnsSearch
 					bind:dnsOptions

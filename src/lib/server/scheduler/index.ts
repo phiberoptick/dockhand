@@ -24,6 +24,8 @@ import {
 	getEnvironments,
 	getEnvUpdateCheckSettings,
 	getAllEnvUpdateCheckSettings,
+	getImagePruneSettings,
+	getAllImagePruneSettings,
 	getEnvironment,
 	getEnvironmentTimezone,
 	getDefaultTimezone
@@ -38,6 +40,7 @@ import {
 import { runContainerUpdate } from './tasks/container-update';
 import { runGitStackSync } from './tasks/git-stack-sync';
 import { runEnvUpdateCheckJob } from './tasks/env-update-check';
+import { runImagePrune } from './tasks/image-prune';
 import {
 	runScheduleCleanupJob,
 	runEventCleanupJob,
@@ -247,7 +250,26 @@ export async function refreshAllSchedules(): Promise<void> {
 		console.error('[Scheduler] Error loading env update check schedules:', errorMsg);
 	}
 
-	console.log(`[Scheduler] Registered ${containerCount} container schedules, ${gitStackCount} git stack schedules, ${envUpdateCheckCount} env update check schedules`);
+	// Register image prune schedules
+	let imagePruneCount = 0;
+	try {
+		const pruneConfigs = await getAllImagePruneSettings();
+		for (const { envId, settings } of pruneConfigs) {
+			if (settings.enabled && settings.cronExpression) {
+				const registered = await registerSchedule(
+					envId,
+					'image_prune',
+					envId
+				);
+				if (registered) imagePruneCount++;
+			}
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Scheduler] Error loading image prune schedules:', errorMsg);
+	}
+
+	console.log(`[Scheduler] Registered ${containerCount} container schedules, ${gitStackCount} git stack schedules, ${envUpdateCheckCount} env update check schedules, ${imagePruneCount} image prune schedules`);
 }
 
 /**
@@ -256,7 +278,7 @@ export async function refreshAllSchedules(): Promise<void> {
  */
 export async function registerSchedule(
 	scheduleId: number,
-	type: 'container_update' | 'git_stack_sync' | 'env_update_check',
+	type: 'container_update' | 'git_stack_sync' | 'env_update_check' | 'image_prune',
 	environmentId: number | null
 ): Promise<boolean> {
 	const key = `${type}-${scheduleId}`;
@@ -290,6 +312,14 @@ export async function registerSchedule(
 			cronExpression = config.cron;
 			entityName = `Update: ${env.name}`;
 			enabled = config.enabled;
+		} else if (type === 'image_prune') {
+			const config = await getImagePruneSettings(scheduleId);
+			if (!config) return false;
+			const env = await getEnvironment(scheduleId);
+			if (!env) return false;
+			cronExpression = config.cronExpression;
+			entityName = `Prune: ${env.name}`;
+			enabled = config.enabled;
 		}
 
 		// Don't create job if disabled or no cron expression
@@ -315,6 +345,10 @@ export async function registerSchedule(
 				const config = await getEnvUpdateCheckSettings(scheduleId);
 				if (!config || !config.enabled) return;
 				await runEnvUpdateCheckJob(scheduleId, 'cron');
+			} else if (type === 'image_prune') {
+				const config = await getImagePruneSettings(scheduleId);
+				if (!config || !config.enabled) return;
+				await runImagePrune(scheduleId, 'cron');
 			}
 		});
 
@@ -334,7 +368,7 @@ export async function registerSchedule(
  */
 export function unregisterSchedule(
 	scheduleId: number,
-	type: 'container_update' | 'git_stack_sync' | 'env_update_check'
+	type: 'container_update' | 'git_stack_sync' | 'env_update_check' | 'image_prune'
 ): void {
 	const key = `${type}-${scheduleId}`;
 	const job = activeJobs.get(key);
@@ -405,6 +439,22 @@ export async function refreshSchedulesForEnvironment(environmentId: number): Pro
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		console.error('[Scheduler] Error refreshing env update check schedule:', errorMsg);
+	}
+
+	// Re-register image prune schedule for this environment
+	try {
+		const config = await getImagePruneSettings(environmentId);
+		if (config && config.enabled && config.cronExpression) {
+			const registered = await registerSchedule(
+				environmentId,
+				'image_prune',
+				environmentId
+			);
+			if (registered) refreshedCount++;
+		}
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		console.error('[Scheduler] Error refreshing image prune schedule:', errorMsg);
 	}
 
 	console.log(`[Scheduler] Refreshed ${refreshedCount} schedules for environment ${environmentId}`);
@@ -539,6 +589,30 @@ export async function triggerEnvUpdateCheck(environmentId: number): Promise<{ su
 
 		// Run in background
 		runEnvUpdateCheckJob(environmentId, 'manual');
+
+		return { success: true };
+	} catch (error: any) {
+		return { success: false, error: error.message };
+	}
+}
+
+/**
+ * Manually trigger an image prune for an environment.
+ */
+export async function triggerImagePrune(environmentId: number): Promise<{ success: boolean; executionId?: number; error?: string }> {
+	try {
+		const config = await getImagePruneSettings(environmentId);
+		if (!config) {
+			return { success: false, error: 'Image prune settings not found for this environment' };
+		}
+
+		const env = await getEnvironment(environmentId);
+		if (!env) {
+			return { success: false, error: 'Environment not found' };
+		}
+
+		// Run in background
+		runImagePrune(environmentId, 'manual');
 
 		return { success: true };
 	} catch (error: any) {

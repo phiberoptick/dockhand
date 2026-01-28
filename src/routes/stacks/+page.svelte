@@ -243,6 +243,7 @@
 		{ value: 'running', label: 'Running', icon: Play, color: 'text-emerald-500' },
 		{ value: 'partial', label: 'Partial', icon: CircleDashed, color: 'text-amber-500' },
 		{ value: 'stopped', label: 'Stopped', icon: Square, color: 'text-rose-500' },
+		{ value: 'created', label: 'Created', icon: CircleDashed, color: 'text-slate-500' },
 		{ value: 'not deployed', label: 'Not deployed', icon: Rocket, color: 'text-violet-500' }
 	];
 
@@ -335,13 +336,13 @@
 			const query = searchQuery.toLowerCase();
 			result = result.filter(stack =>
 				stack.name.toLowerCase().includes(query) ||
-				stack.status.toLowerCase().includes(query)
+				getDisplayStatus(stack).toLowerCase().includes(query)
 			);
 		}
 
-		// Filter by status
+		// Filter by status (uses display status so git "created" matches "not deployed")
 		if (statusFilter.length > 0) {
-			result = result.filter(stack => statusFilter.includes(stack.status.toLowerCase()));
+			result = result.filter(stack => statusFilter.includes(getDisplayStatus(stack).toLowerCase()));
 		}
 
 		// Sort
@@ -355,7 +356,7 @@
 					cmp = a.containers.length - b.containers.length;
 					break;
 				case 'status':
-					cmp = a.status.localeCompare(b.status);
+					cmp = getDisplayStatus(a).localeCompare(getDisplayStatus(b));
 					break;
 				case 'cpu':
 					const cpuA = getStackStats(a)?.cpuPercent ?? -1;
@@ -391,7 +392,7 @@
 
 	// Count by status for selected stacks
 	const selectedRunning = $derived(selectedInFilter.filter(s => s.status === 'running' || s.status === 'partial' || s.status === 'restarting'));
-	const selectedStopped = $derived(selectedInFilter.filter(s => s.status === 'stopped' || s.status === 'not deployed'));
+	const selectedStopped = $derived(selectedInFilter.filter(s => s.status === 'stopped' || s.status === 'not deployed' || s.status === 'created'));
 
 	function toggleSelectAll() {
 		if (allFilteredSelected) {
@@ -655,6 +656,13 @@
 		return stackSources[stackName] || { sourceType: 'external' };
 	}
 
+	function getDisplayStatus(stack: ComposeStackInfo): string {
+		if (stack.status === 'created' && getStackSource(stack.name).sourceType === 'git') {
+			return 'not deployed';
+		}
+		return stack.status;
+	}
+
 	async function openGitModal(gitStack?: any) {
 		editingGitStack = gitStack || null;
 		// Fetch repositories and credentials before opening modal
@@ -679,8 +687,14 @@
 		try {
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/start`, envId), { method: 'POST' });
 			if (!response.ok) {
-				const data = await response.json();
-				const errorMsg = data.error || 'Failed to start stack';
+				const rawText = await response.text();
+				let errorMsg = 'Failed to start stack';
+				try {
+					const data = JSON.parse(rawText);
+					errorMsg = data.error || errorMsg;
+				} catch {
+					errorMsg = rawText || errorMsg;
+				}
 				showErrorDialog(`Failed to start ${name}`, errorMsg);
 				return;
 			}
@@ -701,8 +715,14 @@
 		try {
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/stop`, envId), { method: 'POST' });
 			if (!response.ok) {
-				const data = await response.json();
-				const errorMsg = data.error || 'Failed to stop stack';
+				const rawText = await response.text();
+				let errorMsg = 'Failed to stop stack';
+				try {
+					const data = JSON.parse(rawText);
+					errorMsg = data.error || errorMsg;
+				} catch {
+					errorMsg = rawText || errorMsg;
+				}
 				showErrorDialog(`Failed to stop ${name}`, errorMsg);
 				return;
 			}
@@ -723,8 +743,14 @@
 		try {
 			const response = await fetch(appendEnvParam(`/api/stacks/${encodeURIComponent(name)}/restart`, envId), { method: 'POST' });
 			if (!response.ok) {
-				const data = await response.json();
-				const errorMsg = data.error || 'Failed to restart stack';
+				const rawText = await response.text();
+				let errorMsg = 'Failed to restart stack';
+				try {
+					const data = JSON.parse(rawText);
+					errorMsg = data.error || errorMsg;
+				} catch {
+					errorMsg = rawText || errorMsg;
+				}
 				showErrorDialog(`Failed to restart ${name}`, errorMsg);
 				return;
 			}
@@ -817,6 +843,8 @@
 				return `${base} bg-red-200 dark:bg-red-800 text-red-900 dark:text-red-100`;
 			case 'partial':
 				return `${base} bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100`;
+			case 'created':
+				return `${base} bg-slate-200 dark:bg-slate-700 text-slate-900 dark:text-slate-100`;
 			case 'not deployed':
 				return `${base} bg-violet-200 dark:bg-violet-800 text-violet-900 dark:text-violet-100`;
 			default:
@@ -1342,13 +1370,19 @@
 							Internal
 						</span>
 					{:else}
-						<span
-							class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 shadow-sm min-w-[5.5rem]"
-							title="File location unknown"
-						>
-							<ExternalLink class="w-3 h-3" />
-							Untracked
-						</span>
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								<span
+									class="inline-flex items-center justify-center gap-1 text-xs px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 shadow-sm min-w-[5.5rem]"
+								>
+									<ExternalLink class="w-3 h-3" />
+									Untracked
+								</span>
+							</Tooltip.Trigger>
+							<Tooltip.Content class="whitespace-nowrap">
+								Compose file location unknown. Click the stack name or edit button to locate it.
+							</Tooltip.Content>
+						</Tooltip.Root>
 					{/if}
 				{:else if column.id === 'location'}
 					{#if source.composePath}
@@ -1364,7 +1398,7 @@
 							</Tooltip.Content>
 						</Tooltip.Root>
 					{:else}
-						<span class="text-xs text-muted-foreground/50">—</span>
+						<span class="text-xs text-muted-foreground/50 italic">Not set</span>
 					{/if}
 				{:else if column.id === 'containers'}
 					<div class="flex items-center gap-1">
@@ -1465,10 +1499,11 @@
 						{getStackVolumeCount(stack) || '-'}
 					</span>
 				{:else if column.id === 'status'}
-					{@const StatusIcon = getStackStatusIcon(stack.status)}
-					<span class={getStatusClasses(stack.status)}>
+					{@const displayStatus = getDisplayStatus(stack)}
+					{@const StatusIcon = getStackStatusIcon(displayStatus)}
+					<span class={getStatusClasses(displayStatus)}>
 						<StatusIcon class="w-3 h-3" />
-						{stack.status}
+						{displayStatus}
 					</span>
 				{:else if column.id === 'actions'}
 					<div class="relative flex gap-1 justify-end">
@@ -1481,7 +1516,7 @@
 								</button>
 							</div>
 						{/if}
-						{#if stack.status === 'not deployed' && source.gitStack}
+						{#if (stack.status === 'not deployed' || stack.status === 'created') && source.gitStack}
 							<button
 								type="button"
 								onclick={() => openGitModal(source.gitStack)}

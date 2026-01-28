@@ -209,6 +209,72 @@ export function translateContainerPathViaMount(containerPath: string): string | 
 }
 
 /**
+ * Get the host path for the Docker socket mount.
+ * This is needed for sibling containers (e.g., scanners) that need socket access.
+ *
+ * When Dockhand runs in Docker with a non-standard socket mount like:
+ *   -v /var/run/user/1000/docker.sock:/var/run/docker.sock
+ *
+ * We need to detect the HOST path (/var/run/user/1000/docker.sock) so that
+ * scanner containers can bind-mount the correct path.
+ *
+ * @returns The host path to Docker socket, or '/var/run/docker.sock' as default
+ */
+export function getHostDockerSocket(): string {
+	// Priority 1: Explicit environment variable override
+	if (process.env.HOST_DOCKER_SOCKET) {
+		console.log(`[HostPath] Using HOST_DOCKER_SOCKET from env: ${process.env.HOST_DOCKER_SOCKET}`);
+		return process.env.HOST_DOCKER_SOCKET;
+	}
+
+	// Priority 2: Look up from cached mounts (populated by detectHostDataDir on startup)
+	if (cachedMounts && cachedMounts.length > 0) {
+		console.log(`[HostPath] Searching ${cachedMounts.length} cached mount(s) for Docker socket`);
+
+		// Find mount where destination is docker.sock
+		const socketMount = cachedMounts.find(m =>
+			m.destination === '/var/run/docker.sock' ||
+			m.destination === '/run/docker.sock' ||
+			m.destination.endsWith('/docker.sock')
+		);
+
+		if (socketMount) {
+			console.log(`[HostPath] Found Docker socket mount: ${socketMount.source} -> ${socketMount.destination}`);
+			return socketMount.source;
+		}
+
+		// Log available mounts for debugging
+		console.log(`[HostPath] No Docker socket mount found. Available mounts:`);
+		for (const m of cachedMounts) {
+			console.log(`[HostPath]   ${m.source} -> ${m.destination}`);
+		}
+	} else {
+		console.log(`[HostPath] No cached mounts available (not running in Docker or detectHostDataDir not called)`);
+	}
+
+	// Priority 3: Default fallback (works for standard Docker setups)
+	console.log(`[HostPath] Using default Docker socket: /var/run/docker.sock`);
+	return '/var/run/docker.sock';
+}
+
+/**
+ * Extract UID from a user-specific Docker socket path.
+ * User-specific sockets are at /run/user/<uid>/docker.sock
+ *
+ * @param socketPath - The host Docker socket path
+ * @returns The UID as a string (e.g., "1000"), or null if not a user-specific path
+ */
+export function extractUidFromSocketPath(socketPath: string): string | null {
+	// Match patterns like /run/user/1000/docker.sock or /var/run/user/1000/docker.sock
+	const match = socketPath.match(/\/user\/(\d+)\/docker\.sock$/);
+	if (match) {
+		console.log(`[HostPath] Extracted UID ${match[1]} from socket path: ${socketPath}`);
+		return match[1];
+	}
+	return null;
+}
+
+/**
  * Rewrite relative volume paths in a compose file to use absolute host paths.
  * This is necessary when Dockhand runs inside Docker with a mounted data volume.
  *

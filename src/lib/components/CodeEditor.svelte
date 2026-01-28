@@ -548,14 +548,14 @@
 			fontSize: '13px'
 		},
 		'.cm-content': {
-			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+			fontFamily: 'var(--font-editor, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
 			padding: '8px 0'
 		},
 		'.cm-gutters': {
 			backgroundColor: '#1a1a1a',
 			color: '#858585',
 			border: 'none',
-			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+			fontFamily: 'var(--font-editor, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
 			fontSize: '13px'
 		},
 		'.cm-activeLineGutter': {
@@ -590,14 +590,14 @@
 			fontSize: '13px'
 		},
 		'.cm-content': {
-			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+			fontFamily: 'var(--font-editor, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
 			padding: '8px 0'
 		},
 		'.cm-gutters': {
 			backgroundColor: '#fafafa',
 			color: '#a1a1aa',
 			border: 'none',
-			fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+			fontFamily: 'var(--font-editor, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
 			fontSize: '13px'
 		},
 		'.cm-activeLineGutter': {

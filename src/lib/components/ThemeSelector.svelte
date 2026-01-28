@@ -1,9 +1,26 @@
 <script lang="ts">
-	import { Sun, Moon, Type, AArrowUp, Table, Terminal } from 'lucide-svelte';
+	import { onMount } from 'svelte';
+	import { Sun, Moon, Type, AArrowUp, Table, Terminal, CodeXml } from 'lucide-svelte';
 	import * as Select from '$lib/components/ui/select';
 	import { Label } from '$lib/components/ui/label';
 	import { lightThemes, darkThemes, fonts, monospaceFonts } from '$lib/themes';
 	import { themeStore, applyTheme, type FontSize } from '$lib/stores/theme';
+
+	// Preload all monospace Google Fonts so dropdown previews render correctly
+	let monoFontsLoaded = $state(false);
+	onMount(() => {
+		const fontsToLoad = monospaceFonts.filter(f => f.googleFont);
+		if (fontsToLoad.length === 0) {
+			monoFontsLoaded = true;
+			return;
+		}
+		const families = fontsToLoad.map(f => `family=${f.googleFont}`).join('&');
+		const link = document.createElement('link');
+		link.rel = 'stylesheet';
+		link.href = `https://fonts.googleapis.com/css2?${families}&display=swap`;
+		link.onload = () => { monoFontsLoaded = true; };
+		document.head.appendChild(link);
+	});
 
 	// Font size options
 	const fontSizes: { id: FontSize; name: string }[] = [
@@ -28,6 +45,7 @@
 	let selectedFontSize = $state($themeStore.fontSize);
 	let selectedGridFontSize = $state($themeStore.gridFontSize);
 	let selectedTerminalFont = $state($themeStore.terminalFont);
+	let selectedEditorFont = $state($themeStore.editorFont);
 
 	// Sync local state with store changes
 	$effect(() => {
@@ -37,6 +55,7 @@
 		selectedFontSize = $themeStore.fontSize;
 		selectedGridFontSize = $themeStore.gridFontSize;
 		selectedTerminalFont = $themeStore.terminalFont;
+		selectedEditorFont = $themeStore.editorFont;
 	});
 
 	async function handleLightThemeChange(value: string | undefined) {
@@ -74,6 +93,13 @@
 		selectedTerminalFont = value;
 		await themeStore.setPreference('terminalFont', value, userId);
 	}
+
+	async function handleEditorFontChange(value: string | undefined) {
+		if (!value) return;
+		selectedEditorFont = value;
+		await themeStore.setPreference('editorFont', value, userId);
+	}
+
 </script>
 
 <div class="space-y-4">
@@ -231,6 +257,30 @@
 			<Select.Trigger class="w-56">
 				{#each monospaceFonts as font}
 					{#if font.id === selectedTerminalFont}
+						<span style="font-family: {font.family}">{font.name}</span>
+					{/if}
+				{/each}
+			</Select.Trigger>
+			<Select.Content>
+				{#each monospaceFonts as font}
+					<Select.Item value={font.id}>
+						<span style="font-family: {font.family}">{font.name}</span>
+					</Select.Item>
+				{/each}
+			</Select.Content>
+		</Select.Root>
+	</div>
+
+	<!-- Editor Font -->
+	<div class="flex items-center justify-between">
+		<div class="flex items-center gap-2">
+			<CodeXml class="w-4 h-4 text-muted-foreground" />
+			<Label>Editor font</Label>
+		</div>
+		<Select.Root type="single" value={selectedEditorFont} onValueChange={handleEditorFontChange}>
+			<Select.Trigger class="w-56">
+				{#each monospaceFonts as font}
+					{#if font.id === selectedEditorFont}
 						<span style="font-family: {font.family}">{font.name}</span>
 					{/if}
 				{/each}

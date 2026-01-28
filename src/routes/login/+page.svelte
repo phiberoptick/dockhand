@@ -10,6 +10,7 @@
 	import { authStore } from '$lib/stores/auth';
 	import { environments } from '$lib/stores/environment';
 	import * as Alert from '$lib/components/ui/alert';
+	import { themeStore, applyTheme } from '$lib/stores/theme';
 
 	interface AuthProvider {
 		id: string;
@@ -60,6 +61,22 @@
 	}
 
 	onMount(async () => {
+		// Set dark mode class based on saved preference or system preference
+		// This must happen before applyTheme since applyTheme reads the dark class
+		const savedTheme = localStorage.getItem('theme');
+		const prefersDark = savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches);
+		if (prefersDark) {
+			document.documentElement.classList.add('dark');
+		} else {
+			document.documentElement.classList.remove('dark');
+		}
+
+		// Apply theme from localStorage immediately (for flash-free loading)
+		applyTheme(themeStore.get());
+
+		// Initialize theme from app settings (no user yet, so fetches from /api/settings/theme)
+		themeStore.init();
+
 		// Set error from URL if present
 		if (urlError) {
 			error = decodeURIComponent(urlError);

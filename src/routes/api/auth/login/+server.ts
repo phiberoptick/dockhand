@@ -41,6 +41,11 @@ export const POST: RequestHandler = async (event) => {
 			);
 		}
 
+		// Reject local login attempts when DISABLE_LOCAL_LOGIN is set
+		if (provider === 'local' && process.env.DISABLE_LOCAL_LOGIN === 'true') {
+			return json({ error: 'Local login is disabled' }, { status: 403 });
+		}
+
 		// Attempt authentication based on provider
 		let result: any;
 		let authProviderType: 'local' | 'ldap' | 'oidc' = 'local';

@@ -7,6 +7,7 @@
 
 import { readdirSync, existsSync, statSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
+import yaml from 'js-yaml';
 import { getExternalStackPaths, getStackSources, upsertStackSource, type StackSourceType } from './db';
 
 // Compose file patterns to detect (in order of priority - prefer new style first)
@@ -67,23 +68,17 @@ async function isComposeFile(filePath: string): Promise<boolean> {
 
 /**
  * Count the number of services defined in a compose file
- * Uses simple regex to count top-level keys under 'services:' section
+ * Parses YAML to reliably count top-level keys under 'services:' section
  */
 async function countServices(filePath: string): Promise<number> {
 	try {
 		const file = Bun.file(filePath);
 		const content = await file.text();
-
-		// Find the services section and count top-level keys
-		const servicesMatch = content.match(/^services:\s*\n((?:[ \t]+\S[^\n]*\n?)*)/m) ||
-		                      content.match(/\nservices:\s*\n((?:[ \t]+\S[^\n]*\n?)*)/m);
-
-		if (!servicesMatch) return 0;
-
-		const servicesBlock = servicesMatch[1];
-		// Count lines that start with exactly 2 spaces followed by a non-space (service names)
-		const serviceLines = servicesBlock.match(/^  [a-zA-Z0-9_-]+:/gm);
-		return serviceLines?.length || 0;
+		const doc = yaml.load(content) as Record<string, unknown> | null;
+		if (doc?.services && typeof doc.services === 'object') {
+			return Object.keys(doc.services).length;
+		}
+		return 0;
 	} catch {
 		return 0;
 	}

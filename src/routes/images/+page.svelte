@@ -18,6 +18,7 @@
 	import ImageHistoryModal from './ImageHistoryModal.svelte';
 	import ImageScanModal from './ImageScanModal.svelte';
 	import PushToRegistryModal from './PushToRegistryModal.svelte';
+	import ImagePullModal from '$lib/components/ImagePullModal.svelte';
 	import type { ImageInfo } from '$lib/types';
 	import { currentEnvironment, environments, appendEnvParam, clearStaleEnvironment } from '$lib/stores/environment';
 	import CreateContainerModal from '../containers/CreateContainerModal.svelte';
@@ -80,6 +81,9 @@
 	// Push modal state
 	let showPushModal = $state(false);
 	let pushingImage = $state<{ id: string; tag: string } | null>(null);
+
+	// Pull modal state
+	let showPullModal = $state(false);
 
 	// Run modal state
 	let showRunModal = $state(false);
@@ -723,6 +727,12 @@
 				{/snippet}
 			</ConfirmPopover>
 			{/if}
+			{#if $canAccess('images', 'pull')}
+			<Button size="sm" variant="default" onclick={() => showPullModal = true}>
+				<Download class="w-3.5 h-3.5 mr-1.5" />
+				Pull
+			</Button>
+			{/if}
 			<Button size="sm" variant="outline" onclick={fetchImages}>Refresh</Button>
 		</div>
 	</div>
@@ -1068,6 +1078,16 @@
 		</DataGrid>
 	{/if}
 </div>
+
+<!-- Pull Image Modal -->
+<ImagePullModal
+	bind:open={showPullModal}
+	{registries}
+	{envId}
+	envHasScanning={scannerEnabled}
+	showDeleteButton={true}
+	onComplete={fetchImages}
+/>
 
 <!-- Push to Registry Modal -->
 {#if pushingImage}

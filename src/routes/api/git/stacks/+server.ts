@@ -6,12 +6,14 @@ import {
 	getGitCredentials,
 	getGitRepository,
 	createGitRepository,
-	upsertStackSource
+	upsertStackSource,
+	setStackEnvVars
 } from '$lib/server/db';
 import { deployGitStack } from '$lib/server/git';
 import { authorize } from '$lib/server/authorize';
 import { registerSchedule } from '$lib/server/scheduler';
 import { secureRandomBytes } from '$lib/server/crypto-fallback';
+import { auditGitStack } from '$lib/server/audit';
 
 // Stack name validation: must start with alphanumeric, can contain alphanumeric, hyphens, underscores
 const STACK_NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -37,7 +39,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 	}
 };
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async (event) => {
+	const { request, cookies } = event;
 	const auth = await authorize(cookies);
 
 	try {
@@ -132,9 +135,26 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 			await registerSchedule(gitStack.id, 'git_stack_sync', gitStack.environmentId);
 		}
 
+		// Audit log
+		await auditGitStack(event, 'create', gitStack.id, gitStack.stackName, gitStack.environmentId);
+
+		// Save environment variable overrides before deploying
+		if (data.envVars && Array.isArray(data.envVars) && data.envVars.length > 0) {
+			await setStackEnvVars(
+				trimmedStackName,
+				data.environmentId || null,
+				data.envVars.filter((v: any) => v.key?.trim()).map((v: any) => ({
+					key: v.key.trim(),
+					value: v.value ?? '',
+					isSecret: v.isSecret ?? false
+				}))
+			);
+		}
+
 		// If deployNow is set, deploy immediately
 		if (data.deployNow) {
 			const deployResult = await deployGitStack(gitStack.id);
+			await auditGitStack(event, 'deploy', gitStack.id, gitStack.stackName, gitStack.environmentId);
 			return json({
 				...gitStack,
 				deployResult: deployResult

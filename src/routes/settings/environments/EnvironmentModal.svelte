@@ -72,8 +72,11 @@
 	import { focusFirstInput } from '$lib/utils';
 	import { authStore, canAccess } from '$lib/stores/auth';
 	import { licenseStore } from '$lib/stores/license';
+	import { formatDateTime } from '$lib/stores/settings';
 	import { getLabelColor, getLabelBgColor, parseLabels, MAX_LABELS } from '$lib/utils/label-colors';
 	import EventTypesEditor from './EventTypesEditor.svelte';
+	import UpdatesTab from './tabs/UpdatesTab.svelte';
+	import ActivityTab from './tabs/ActivityTab.svelte';
 
 	// Scanner options for ToggleGroup
 	const scannerOptions = [
@@ -366,6 +369,14 @@
 	let updateCheckVulnerabilityCriteria = $state<VulnerabilityCriteria>('never');
 	let updateCheckLoading = $state(false);
 
+	// Image prune settings state
+	let imagePruneEnabled = $state(false);
+	let imagePruneCron = $state('0 3 * * 0'); // Default: 3 AM Sunday
+	let imagePruneMode = $state<'dangling' | 'all'>('dangling');
+	let imagePruneLastPruned = $state<string | undefined>(undefined);
+	let imagePruneLastResult = $state<{ spaceReclaimed: number; imagesRemoved: number } | undefined>(undefined);
+	let imagePruneLoading = $state(false);
+
 	// === Validation Functions ===
 	function isValidHost(host: string): boolean {
 		if (!host) return false;
@@ -419,10 +430,11 @@
 			hawserToken = null;
 			generatedToken = null;
 			pendingToken = null;
-			// Load scanner settings, notifications, update check settings, and timezone
+			// Load scanner settings, notifications, update check settings, image prune settings, and timezone
 			loadScannerSettings(environment.id);
 			loadEnvNotifications(environment.id);
 			loadUpdateCheckSettings(environment.id);
+			loadImagePruneSettings(environment.id);
 			loadTimezone(environment.id);
 			// Load Hawser token if edge mode
 			if (formConnectionType === 'hawser-edge') {
@@ -461,6 +473,12 @@
 			updateCheckEnabled = false;
 			updateCheckCron = '0 4 * * *';
 			updateCheckAutoUpdate = false;
+			// Reset image prune settings
+			imagePruneEnabled = false;
+			imagePruneCron = '0 3 * * 0';
+			imagePruneMode = 'dangling';
+			imagePruneLastPruned = undefined;
+			imagePruneLastResult = undefined;
 			// Load default timezone from global settings
 			loadDefaultTimezone();
 		}
@@ -664,6 +682,10 @@
 				if (updateCheckEnabled && newEnv?.id) {
 					await saveUpdateCheckSettings(newEnv.id);
 				}
+				// Save image prune settings if enabled
+				if (imagePruneEnabled && newEnv?.id) {
+					await saveImagePruneSettings(newEnv.id);
+				}
 				// Save timezone if not default
 				if (newEnv?.id) {
 					await saveTimezone(newEnv.id);
@@ -735,6 +757,7 @@
 			if (response.ok) {
 				await saveScannerSettings(environment.id);
 				await saveUpdateCheckSettings(environment.id);
+				await saveImagePruneSettings(environment.id);
 				await saveTimezone(environment.id);
 				toast.success(`Updated environment: ${formName}`);
 				onSaved();
@@ -894,6 +917,51 @@
 			});
 		} catch (error) {
 			console.error('Failed to save update check settings:', error);
+		}
+	}
+
+	// === Image Prune Settings Functions ===
+	async function loadImagePruneSettings(envId: number) {
+		imagePruneLoading = true;
+		try {
+			const response = await fetch(`/api/environments/${envId}/image-prune`);
+			if (response.ok) {
+				const data = await response.json();
+				if (data.settings) {
+					imagePruneEnabled = data.settings.enabled ?? false;
+					imagePruneCron = data.settings.cronExpression || '0 3 * * 0';
+					imagePruneMode = data.settings.pruneMode || 'dangling';
+					imagePruneLastPruned = data.settings.lastPruned;
+					imagePruneLastResult = data.settings.lastResult;
+				} else {
+					// No settings found - use defaults
+					imagePruneEnabled = false;
+					imagePruneCron = '0 3 * * 0';
+					imagePruneMode = 'dangling';
+					imagePruneLastPruned = undefined;
+					imagePruneLastResult = undefined;
+				}
+			}
+		} catch (error) {
+			console.error('Failed to load image prune settings:', error);
+		} finally {
+			imagePruneLoading = false;
+		}
+	}
+
+	async function saveImagePruneSettings(envId: number) {
+		try {
+			await fetch(`/api/environments/${envId}/image-prune`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					enabled: imagePruneEnabled,
+					cronExpression: imagePruneCron,
+					pruneMode: imagePruneMode
+				})
+			});
+		} catch (error) {
+			console.error('Failed to save image prune settings:', error);
 		}
 	}
 
@@ -1929,117 +1997,30 @@
 
 				<!-- Updates Tab -->
 				<Tabs.Content value="updates" class="space-y-4 mt-0 h-full">
-					<div class="space-y-4">
-						<div class="text-sm font-medium">
-							Scheduled update check
-						</div>
-						<p class="text-xs text-muted-foreground">
-							Periodically check all containers in this environment for available image updates.
-						</p>
-
-						{#if updateCheckLoading}
-							<div class="flex items-center justify-center py-4">
-								<RefreshCw class="w-5 h-5 animate-spin text-muted-foreground" />
-							</div>
-						{:else}
-							<div class="flex items-start gap-2">
-								<CircleFadingArrowUp class="w-4 h-4 text-green-500 glow-green mt-0.5 shrink-0" />
-								<div class="flex-1">
-									<Label>Enable scheduled update check</Label>
-									<p class="text-xs text-muted-foreground">Automatically check for container updates on a schedule</p>
-								</div>
-								<TogglePill bind:checked={updateCheckEnabled} />
-							</div>
-
-							{#if updateCheckEnabled}
-								<div class="flex items-start gap-2">
-									<div class="w-4 shrink-0"></div>
-									<div class="flex-1 space-y-2">
-										<Label>Schedule</Label>
-										<CronEditor value={updateCheckCron} onchange={(cron) => updateCheckCron = cron} />
-									</div>
-								</div>
-
-								<div class="flex items-start gap-2">
-									<CircleArrowUp class="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
-									<div class="flex-1">
-										<Label>Automatically update containers</Label>
-										<p class="text-xs text-muted-foreground">
-											When enabled, containers will be updated automatically when new images are found.
-											When disabled, only sends notifications about available updates.
-										</p>
-									</div>
-									<TogglePill bind:checked={updateCheckAutoUpdate} />
-								</div>
-
-								{#if updateCheckAutoUpdate && scannerEnabled}
-									<div class="flex items-start gap-2">
-										<div class="w-4 shrink-0"></div>
-										<div class="flex-1">
-											<Label>Block updates with vulnerabilities</Label>
-											<p class="text-xs text-muted-foreground">
-												Block auto-updates if the new image has vulnerabilities exceeding this criteria
-											</p>
-										</div>
-										<VulnerabilityCriteriaSelector
-											bind:value={updateCheckVulnerabilityCriteria}
-											class="w-[200px]"
-										/>
-									</div>
-								{/if}
-
-								<div class="text-xs text-muted-foreground bg-muted/50 rounded-md p-2 flex items-start gap-2">
-									<Info class="w-3 h-3 mt-0.5 shrink-0" />
-									{#if updateCheckAutoUpdate}
-										{#if scannerEnabled && updateCheckVulnerabilityCriteria !== 'never'}
-											<span>New images are pulled to a temporary tag, scanned, then deployed if they pass the vulnerability check. Blocked images are deleted automatically.</span>
-										{:else}
-											<span>Containers will be updated automatically when new images are available.</span>
-										{/if}
-									{:else}
-										<span>You'll receive notifications when updates are available. Containers won't be modified.</span>
-									{/if}
-								</div>
-							{/if}
-						{/if}
-					</div>
-
-					<!-- Timezone selector -->
-					<div class="space-y-2">
-						<Label>Timezone</Label>
-						<TimezoneSelector
-							bind:value={formTimezone}
-							id="edit-env-timezone"
-						/>
-						<p class="text-xs text-muted-foreground">
-							Used for scheduling auto-updates and git syncs
-						</p>
-					</div>
+					<UpdatesTab
+						updateCheckLoading={updateCheckLoading}
+						bind:updateCheckEnabled={updateCheckEnabled}
+						bind:updateCheckCron={updateCheckCron}
+						bind:updateCheckAutoUpdate={updateCheckAutoUpdate}
+						bind:updateCheckVulnerabilityCriteria={updateCheckVulnerabilityCriteria}
+						scannerEnabled={scannerEnabled}
+						imagePruneLoading={imagePruneLoading}
+						bind:imagePruneEnabled={imagePruneEnabled}
+						bind:imagePruneCron={imagePruneCron}
+						bind:imagePruneMode={imagePruneMode}
+						imagePruneLastPruned={imagePruneLastPruned}
+						imagePruneLastResult={imagePruneLastResult}
+						bind:timezone={formTimezone}
+					/>
 				</Tabs.Content>
 
 				<!-- Activity Tab -->
 				<Tabs.Content value="activity" class="space-y-4 mt-0 h-full">
-					<div class="flex items-start gap-3">
-						<div class="flex-1">
-							<Label>Collect container activity</Label>
-							<p class="text-xs text-muted-foreground">Track container events (start, stop, restart, etc.) from this environment in real-time</p>
-						</div>
-						<TogglePill bind:checked={formCollectActivity} />
-					</div>
-					<div class="flex items-start gap-3">
-						<div class="flex-1">
-							<Label>Collect system metrics</Label>
-							<p class="text-xs text-muted-foreground">Collect CPU and memory usage statistics from this environment</p>
-						</div>
-						<TogglePill bind:checked={formCollectMetrics} />
-					</div>
-					<div class="flex items-start gap-3">
-						<div class="flex-1">
-							<Label>Highlight value changes</Label>
-							<p class="text-xs text-muted-foreground">Show amber glow when container values change in the containers list</p>
-						</div>
-						<TogglePill bind:checked={formHighlightChanges} />
-					</div>
+					<ActivityTab
+						bind:collectActivity={formCollectActivity}
+						bind:collectMetrics={formCollectMetrics}
+						bind:highlightChanges={formHighlightChanges}
+					/>
 				</Tabs.Content>
 
 				<!-- Security Tab -->

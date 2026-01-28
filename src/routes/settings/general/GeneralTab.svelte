@@ -128,20 +128,22 @@
 					<Card.Title class="text-sm font-medium flex items-center gap-2">
 						<Eye class="w-4 h-4" />
 						Appearance
-						{#if !$authStore.authEnabled}
-							<Tooltip.Provider delayDuration={100}>
-								<Tooltip.Root>
-									<Tooltip.Trigger>
-										<HelpCircle class="w-4 h-4 text-muted-foreground cursor-help" />
-									</Tooltip.Trigger>
-									<Tooltip.Portal>
-										<Tooltip.Content side="right" sideOffset={8} class="!w-80">
-											Theme and font settings are global when authentication is disabled. When auth is enabled, users can customize their appearance in their profile.
-										</Tooltip.Content>
-									</Tooltip.Portal>
-								</Tooltip.Root>
-							</Tooltip.Provider>
-						{/if}
+						<Tooltip.Provider delayDuration={100}>
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									<HelpCircle class="w-4 h-4 text-muted-foreground cursor-help" />
+								</Tooltip.Trigger>
+								<Tooltip.Portal>
+									<Tooltip.Content side="right" sideOffset={8} class="!w-80">
+										{#if $authStore.authEnabled}
+											These settings apply to the login page and as defaults. Personal preferences can be configured in your profile.
+										{:else}
+											Theme and font settings are global when authentication is disabled.
+										{/if}
+									</Tooltip.Content>
+								</Tooltip.Portal>
+							</Tooltip.Root>
+						</Tooltip.Provider>
 					</Card.Title>
 				</Card.Header>
 				<Card.Content>
@@ -225,20 +227,18 @@
 								<p class="text-xs text-muted-foreground">How dates are displayed throughout the app</p>
 							</div>
 						</div>
-						<!-- Right column: Theme settings (only when auth disabled) -->
-						{#if !$authStore.authEnabled}
-							<div class="space-y-4">
-								<ThemeSelector />
-							</div>
-						{:else}
-							<div class="text-xs text-muted-foreground flex items-start gap-1.5">
-								<HelpCircle class="w-3.5 h-3.5 shrink-0 mt-0.5" />
-								<div>
-									<p>Appearance settings (theme, fonts) are personal when auth is enabled.</p>
-									<a href="/profile" class="text-primary hover:underline">Configure in your profile</a>
+						<!-- Right column: Theme settings (always shown, with hint when auth enabled) -->
+						<div class="space-y-4">
+							<ThemeSelector />
+							{#if $authStore.authEnabled}
+								<div class="text-xs text-muted-foreground flex items-start gap-1.5 mt-2 p-2 bg-muted/50 rounded-md">
+									<HelpCircle class="w-3.5 h-3.5 shrink-0 mt-0.5" />
+									<div>
+										<p>Personal theme preferences can be configured in your <a href="/profile" class="text-primary hover:underline">profile</a>.</p>
+									</div>
 								</div>
-							</div>
-						{/if}
+							{/if}
+						</div>
 					</div>
 				</Card.Content>
 			</Card.Root>

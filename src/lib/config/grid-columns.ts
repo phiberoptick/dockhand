@@ -6,7 +6,7 @@ export const containerColumns: ColumnConfig[] = [
 	{ id: 'name', label: 'Name', sortable: true, sortField: 'name', width: 140, minWidth: 80, grow: true },
 	{ id: 'image', label: 'Image', sortable: true, sortField: 'image', width: 180, minWidth: 100, grow: true },
 	{ id: 'state', label: 'State', sortable: true, sortField: 'state', width: 90, minWidth: 70, noTruncate: true },
-	{ id: 'health', label: 'Health', width: 55, minWidth: 40 },
+	{ id: 'health', label: 'Health', sortable: true, sortField: 'health', width: 55, minWidth: 40 },
 	{ id: 'uptime', label: 'Uptime', sortable: true, sortField: 'uptime', width: 80, minWidth: 60 },
 	{ id: 'restartCount', label: 'Restarts', width: 70, minWidth: 50 },
 	{ id: 'cpu', label: 'CPU', sortable: true, sortField: 'cpu', width: 50, minWidth: 40, align: 'right' },
@@ -94,6 +94,18 @@ export const activityColumns: ColumnConfig[] = [
 	{ id: 'actions', label: '', fixed: 'end', width: 50, resizable: false }
 ];
 
+// Audit log grid columns
+export const auditColumns: ColumnConfig[] = [
+	{ id: 'timestamp', label: 'Timestamp', width: 165, minWidth: 140 },
+	{ id: 'environment', label: 'Environment', width: 140, minWidth: 100 },
+	{ id: 'user', label: 'User', width: 120, minWidth: 80 },
+	{ id: 'action', label: 'Action', width: 55, resizable: false },
+	{ id: 'entity', label: 'Entity', width: 100, minWidth: 80 },
+	{ id: 'name', label: 'Name', width: 200, minWidth: 100, grow: true },
+	{ id: 'ip', label: 'IP address', width: 120, minWidth: 90 },
+	{ id: 'actions', label: '', fixed: 'end', width: 50, resizable: false }
+];
+
 // Schedule grid columns
 export const scheduleColumns: ColumnConfig[] = [
 	{ id: 'expand', label: '', fixed: 'start', width: 24, resizable: false },
@@ -115,7 +127,8 @@ export const gridColumnConfigs: Record<GridId, ColumnConfig[]> = {
 	stacks: stackColumns,
 	volumes: volumeColumns,
 	activity: activityColumns,
-	schedules: scheduleColumns
+	schedules: scheduleColumns,
+	audit: auditColumns
 };
 
 // Get configurable columns (not fixed)

@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { getEnvironments, getEnvironmentByName, createEnvironment, assignUserRole, getRoleByName, getEnvironmentPublicIps, setEnvironmentPublicIp, getEnvUpdateCheckSettings, getEnvironmentTimezone, type Environment } from '$lib/server/db';
+import { getEnvironments, getEnvironmentByName, createEnvironment, assignUserRole, getRoleByName, getEnvironmentPublicIps, setEnvironmentPublicIp, getEnvUpdateCheckSettings, getEnvironmentTimezone, getImagePruneSettings, type Environment } from '$lib/server/db';
 import { authorize } from '$lib/server/authorize';
+import { auditEnvironment } from '$lib/server/audit';
 import { refreshSubprocessEnvironments } from '$lib/server/subprocess-manager';
 import { serializeLabels, parseLabels, MAX_LABELS } from '$lib/utils/label-colors';
 import { cleanPem } from '$lib/utils/pem';
@@ -36,16 +37,18 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			}
 		}
 
-		// Parse labels from JSON string to array, add public IPs, update check settings, and timezone
+		// Parse labels from JSON string to array, add public IPs, update check settings, image prune settings, and timezone
 		const envWithParsedLabels = await Promise.all(environments.map(async env => {
 			const updateSettings = updateCheckSettingsMap.get(env.id);
 			const timezone = await getEnvironmentTimezone(env.id);
+			const imagePruneSettings = await getImagePruneSettings(env.id);
 			return {
 				...env,
 				labels: parseLabels(env.labels as string | null),
 				publicIp: publicIps[env.id.toString()] || null,
 				updateCheckEnabled: updateSettings?.enabled || false,
 				updateCheckAutoUpdate: updateSettings?.autoUpdate || false,
+				imagePruneEnabled: imagePruneSettings?.enabled || false,
 				timezone
 			};
 		}));
@@ -57,7 +60,8 @@ export const GET: RequestHandler = async ({ cookies }) => {
 	}
 };
 
-export const POST: RequestHandler = async ({ request, cookies }) => {
+export const POST: RequestHandler = async (event) => {
+	const { request, cookies } = event;
 	const auth = await authorize(cookies);
 	if (auth.authEnabled && !await auth.can('environments', 'create')) {
 		return json({ error: 'Permission denied' }, { status: 403 });
@@ -127,6 +131,9 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 				}
 			}
 		}
+
+		// Audit log
+		await auditEnvironment(event, 'create', env.id, env.name);
 
 		return json(env);
 	} catch (error) {

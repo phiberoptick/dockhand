@@ -70,7 +70,6 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 		if (restart) {
 			// Deploy with docker compose up -d --force-recreate
 			// Force recreate ensures env var changes are applied
-			// Note: deployStack uses requireComposeFile which will use saved paths
 			// Save paths first if provided
 			if (pathOptions) {
 				const saveResult = await saveStackComposeFile(name, content, false, envIdNum, pathOptions);
@@ -78,11 +77,15 @@ export const PUT: RequestHandler = async ({ params, request, url, cookies }) => 
 					return json({ error: saveResult.error }, { status: 500 });
 				}
 			}
+			// Get authoritative paths from DB/filesystem for deploy
+			const composeInfo = await getStackComposeFile(name, envIdNum);
 			result = await deployStack({
 				name,
 				compose: content,
 				envId: envIdNum,
-				forceRecreate: true
+				forceRecreate: true,
+				composePath: composeInfo.composePath || undefined,
+				envPath: composeInfo.envPath || undefined
 			});
 		} else {
 			// Just save the file without restarting (update operation, not create)

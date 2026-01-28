@@ -49,6 +49,6 @@ export const GET: RequestHandler = async ({ url }) => {
 		stackDir,
 		composePath: `${stackDir}/compose.yaml`,
 		envPath: `${stackDir}/.env`,
-		source: location ? 'custom' : 'default'
+		source: 'default'
 	});
 };
