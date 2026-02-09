@@ -314,6 +314,11 @@ async function getEnvironmentStatsProgressive(
 				});
 
 				return images;
+			})
+			.catch(() => {
+				envStats.loading!.images = false;
+				onPartialUpdate({ id: env.id, loading: { ...envStats.loading! } });
+				return [];
 			});
 
 		const networksPromise = withTimeout(listNetworks(env.id).catch(() => []), 10000, [])
@@ -328,6 +333,11 @@ async function getEnvironmentStatsProgressive(
 				});
 
 				return networks;
+			})
+			.catch(() => {
+				envStats.loading!.networks = false;
+				onPartialUpdate({ id: env.id, loading: { ...envStats.loading! } });
+				return [];
 			});
 
 		const stacksPromise = withTimeout(listComposeStacks(env.id).catch(() => []), 10000, [])
@@ -345,6 +355,11 @@ async function getEnvironmentStatsProgressive(
 				});
 
 				return stacks;
+			})
+			.catch(() => {
+				envStats.loading!.stacks = false;
+				onPartialUpdate({ id: env.id, loading: { ...envStats.loading! } });
+				return [];
 			});
 
 		// PHASE 3: Disk usage (slow - includes volumes) - uses cache for better performance
@@ -390,6 +405,12 @@ async function getEnvironmentStatsProgressive(
 					});
 
 					return diskUsage;
+				})
+				.catch(() => {
+					envStats.loading!.volumes = false;
+					envStats.loading!.diskUsage = false;
+					onPartialUpdate({ id: env.id, loading: { ...envStats.loading! } });
+					return null;
 				});
 
 		// PHASE 4: Top containers (slow - requires per-container stats)
@@ -436,10 +457,14 @@ async function getEnvironmentStatsProgressive(
 			});
 
 			return envStats.topContainers;
+		}).catch(() => {
+			envStats.loading!.topContainers = false;
+			onPartialUpdate({ id: env.id, loading: { ...envStats.loading! } });
+			return [];
 		});
 
 		// Wait for all to complete
-		await Promise.all([
+		await Promise.allSettled([
 			containersPromise,
 			imagesPromise,
 			networksPromise,
@@ -572,7 +597,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			});
 
 			// Wait for all to complete
-			await Promise.all(promises);
+			await Promise.allSettled(promises);
 
 			// Send done event and close
 			if (!controllerClosed) {

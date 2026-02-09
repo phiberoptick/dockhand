@@ -1,5 +1,17 @@
 [
   {
+    "version": "1.0.16",
+    "date": "2026-02-09",
+    "changes": [
+      { "type": "feature", "text": "Support Docker Compose override files when deploying stacks" },
+      { "type": "fix", "text": "Fix Hawser stack deploy failing when compose file not present on remote host" },
+      { "type": "fix", "text": "Fix Hawser Standard TLS test connection sending HTTP to HTTPS server" },
+      { "type": "fix", "text": "Fix .env variables not applied on save & redeploy" },
+      { "type": "fix", "text": "Fix single Hawser node failure cascading offline state to all environments" }
+    ],
+    "imageTag": "fnsys/dockhand:v1.0.16"
+  },
+  {
     "version": "1.0.15",
     "date": "2026-02-08",
     "changes": [

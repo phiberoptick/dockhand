@@ -549,16 +549,26 @@ export async function dockerFetch(
 		if (config.type === 'https') {
 			const tlsOptions: Record<string, unknown> = {};
 
-			// DISABLE TLS SESSION CACHING: Bun reuses TLS sessions across different hosts,
-			// which causes client certificate mismatches in mTLS scenarios. By setting
-			// sessionTimeout to 0, we force a fresh TLS handshake for every connection.
-			tlsOptions.sessionTimeout = 0;
+			// Detect if mutual TLS (client certificate authentication) is in use
+			const isMtls = !!(config.cert && config.key);
 
-			// Set explicit servername for SNI - helps isolate TLS contexts per host
+			if (isMtls) {
+				// mTLS: Disable session caching to prevent Bun from reusing a TLS session
+				// with wrong client certificates (pool key doesn't include certs)
+				tlsOptions.sessionTimeout = 0;
+			} else {
+				// Non-mTLS HTTPS (CA-only or skip-verify): Allow short-lived session reuse.
+				// Without this, every fetch allocates a new native TLS context in BoringSSL.
+				// Native memory (mmap) is never returned to the OS, causing RSS to grow
+				// continuously in long-running subprocesses (metrics, events).
+				// 30s allows sessions to be reused within one metrics cycle, then expire.
+				tlsOptions.sessionTimeout = 30;
+			}
+
+			// Set explicit servername for SNI - isolates TLS contexts per host
 			tlsOptions.servername = config.host;
 
 			// Load CA certificate (just this environment's CA, not composite)
-			// The sessionTimeout=0 should prevent session reuse across hosts
 			if (config.ca) {
 				tlsOptions.ca = [config.ca];
 			}
@@ -581,10 +591,14 @@ export async function dockerFetch(
 			if (Object.keys(tlsOptions).length > 0) {
 				// @ts-ignore - Bun supports tls options with string certs
 				finalOptions.tls = tlsOptions;
-				// Force new connection for each request to prevent Bun from reusing
-				// a TLS session with wrong client certificates (pool key doesn't include certs)
-				// @ts-ignore - Bun supports keepalive option
-				finalOptions.keepalive = false;
+				if (isMtls) {
+					// mTLS: Force new connection for each request to prevent Bun from
+					// reusing a TLS session with wrong client certificates
+					// @ts-ignore - Bun supports keepalive option
+					finalOptions.keepalive = false;
+				}
+				// Non-mTLS: Use Bun's default keepalive (connection reuse) to avoid
+				// allocating a new native TLS context per request
 			}
 
 				// Optional verbose TLS debugging

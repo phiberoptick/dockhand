@@ -284,7 +284,7 @@
 
 			if (!response.ok) {
 				const data = await response.json();
-				throw new Error(data.error || 'Failed to move files');
+				throw new Error((typeof data.error === 'string' ? data.error : data.message) || 'Failed to move files');
 			}
 
 			const result = await response.json();
@@ -766,7 +766,7 @@ services:
 					}
 					return;
 				}
-				throw new Error(data.error || 'Failed to load compose file');
+				throw new Error((typeof data.error === 'string' ? data.error : data.message) || 'Failed to load compose file');
 			}
 
 			composeContent = data.content;
@@ -931,7 +931,7 @@ services:
 
 			if (!response.ok) {
 				const data = await response.json();
-				throw new Error(data.error || 'Failed to create stack');
+				throw new Error((typeof data.error === 'string' ? data.error : data.message) || 'Failed to create stack');
 			}
 
 			onSuccess();
@@ -1038,22 +1038,7 @@ services:
 				requestBody.moveFromDir = moveFromDir;
 			}
 
-			// Save compose file (with optional paths)
-			const response = await fetch(
-				appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/compose`, envId),
-				{
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(requestBody)
-				}
-			);
-
-			const data = await response.json();
-
-			if (!response.ok) {
-				throw new Error(data.error || 'Failed to save compose file');
-			}
-
+			// Save env files BEFORE compose to ensure deploy reads fresh values
 			// Save raw content to .env file (non-secrets only, comments preserved)
 			const rawEnvResponse = await fetch(
 				appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/env/raw`, envId),
@@ -1066,7 +1051,7 @@ services:
 
 			if (!rawEnvResponse.ok) {
 				const rawEnvError = await rawEnvResponse.json().catch(() => ({ error: 'Failed to save environment file' }));
-				throw new Error(rawEnvError.error || 'Failed to save environment file');
+				throw new Error((typeof rawEnvError.error === 'string' ? rawEnvError.error : rawEnvError.message) || 'Failed to save environment file');
 			}
 
 			// Save only secrets to DB (non-secrets are in the .env file written above)
@@ -1096,6 +1081,22 @@ services:
 				existingSecretKeys = new Set(
 					secretVars.filter(v => v.key.trim()).map(v => v.key.trim())
 				);
+			}
+
+			// Save compose file (with optional paths) - after env so deploy reads fresh .env
+			const response = await fetch(
+				appendEnvParam(`/api/stacks/${encodeURIComponent(stackName)}/compose`, envId),
+				{
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(requestBody)
+				}
+			);
+
+			const data = await response.json();
+
+			if (!response.ok) {
+				throw new Error((typeof data.error === 'string' ? data.error : data.message) || 'Failed to save compose file');
 			}
 
 			isDirty = false; // Reset dirty flag after successful save

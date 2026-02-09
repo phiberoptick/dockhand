@@ -766,6 +766,26 @@ interface ComposeCommandOptions {
 }
 
 /**
+ * Find a Docker Compose override file alongside the main compose file.
+ * Docker Compose auto-discovers these when no -f flag is used, but when -f is required
+ * we need to explicitly include the override file.
+ */
+function findComposeOverrideFile(stackDir: string, composeFileName: string): string | null {
+	const overrideMap: Record<string, string[]> = {
+		'compose.yaml': ['compose.override.yaml', 'compose.override.yml'],
+		'compose.yml': ['compose.override.yaml', 'compose.override.yml'],
+		'docker-compose.yaml': ['docker-compose.override.yaml', 'docker-compose.override.yml'],
+		'docker-compose.yml': ['docker-compose.override.yaml', 'docker-compose.override.yml'],
+	};
+	const candidates = overrideMap[composeFileName] || [];
+	for (const name of candidates) {
+		const fullPath = join(stackDir, name);
+		if (existsSync(fullPath)) return fullPath;
+	}
+	return null;
+}
+
+/**
  * Execute a docker compose command locally via Bun.spawn.
  *
  * @param tlsConfig - TLS configuration for remote Docker connections (certs written to temp files)
@@ -910,7 +930,38 @@ async function executeLocalCompose(
 	// Build command based on operation
 	// If we have modified compose content (host path translation), use stdin instead of file
 	const useStdin = finalComposeContent !== composeContent;
-	const args = ['docker', 'compose', '-p', stackName, '-f', useStdin ? '-' : composeFile];
+	const args = ['docker', 'compose', '-p', stackName];
+
+	// Temp file for path-translated override content (cleaned up in finally block)
+	let tempOverridePath: string | undefined;
+
+	if (useStdin) {
+		// Host path translation: must pipe modified content via stdin
+		args.push('-f', '-');
+		// Also include override file if it exists (needs path translation too)
+		const overrideFile = findComposeOverrideFile(stackDir, basename(composeFile));
+		if (overrideFile) {
+			let overrideContent = await Bun.file(overrideFile).text();
+			if (getHostDataDir()) {
+				const rewrite = rewriteComposeVolumePaths(overrideContent, stackDir);
+				if (rewrite.modified) overrideContent = rewrite.content;
+			}
+			tempOverridePath = join(stackDir, '.compose.override.translated.yaml');
+			await Bun.write(tempOverridePath, overrideContent);
+			args.push('-f', tempOverridePath);
+			console.log(`${logPrefix} Including override file (path-translated): ${basename(overrideFile)}`);
+		}
+	} else if (customComposePath) {
+		// Custom path (imported/adopted stacks): must use -f to point to non-standard location
+		args.push('-f', composeFile);
+		const overrideFile = findComposeOverrideFile(stackDir, basename(composeFile));
+		if (overrideFile) {
+			args.push('-f', overrideFile);
+			console.log(`${logPrefix} Including override file: ${basename(overrideFile)}`);
+		}
+	}
+	// else: internal stack without path translation - no -f needed.
+	// Docker Compose auto-discovers compose.yaml + compose.override.yaml from cwd.
 
 	// Always auto-detect .env in compose directory (defaultEnvPath already defined above)
 	if (existsSync(defaultEnvPath)) {
@@ -1078,6 +1129,15 @@ async function executeLocalCompose(
 			error: `Failed to run docker compose ${operation}: ${err.message}`
 		};
 	} finally {
+		// Cleanup temp override file from host path translation
+		if (tempOverridePath) {
+			try {
+				unlinkSync(tempOverridePath);
+			} catch {
+				// Ignore cleanup errors
+			}
+		}
+
 		// Cleanup TLS temp directory (always runs, even on exception)
 		if (tlsCertDir) {
 			activeTlsDirs.delete(tlsCertDir);
@@ -1293,6 +1353,24 @@ async function executeComposeCommand(
 					console.warn(`[Stack:${stackName}] Failed to read .env file at ${envPath}:`, err);
 				}
 			}
+
+			// Include compose override file if it exists alongside the compose file
+			let hawserStackFiles = stackFiles;
+			const composeDir = workingDir || (composePath ? dirname(composePath) : null);
+			const composeBaseName = composePath ? basename(composePath) : 'compose.yaml';
+			if (composeDir) {
+				const overridePath = findComposeOverrideFile(composeDir, composeBaseName);
+				if (overridePath) {
+					try {
+						const overrideContent = await Bun.file(overridePath).text();
+						hawserStackFiles = { ...(hawserStackFiles || {}), [basename(overridePath)]: overrideContent };
+						console.log(`[Stack:${stackName}] Including override file for Hawser: ${basename(overridePath)}`);
+					} catch (err) {
+						console.warn(`[Stack:${stackName}] Failed to read override file at ${overridePath}:`, err);
+					}
+				}
+			}
+
 			return executeComposeViaHawser(
 				operation,
 				stackName,
@@ -1302,7 +1380,7 @@ async function executeComposeCommand(
 				secretVars,
 				forceRecreate,
 				removeVolumes,
-				stackFiles,
+				hawserStackFiles,
 				serviceName,
 				composeFileName
 			);
@@ -2036,6 +2114,27 @@ export async function deployStack(options: DeployStackOptions): Promise<StackOpe
 				// Default: compose file should already exist (written by saveStackComposeFile)
 				workingDir = await getStackDir(name, envId);
 				console.log(`${logPrefix} Using internal stack directory:`, workingDir);
+			}
+
+		}
+
+		// For Hawser deployments: include compose and .env in stackFiles
+		// Hawser writes files from the files map to disk at STACKS_DIR/{stackName}/
+		if (!stackFiles) {
+			stackFiles = {};
+		}
+		const composeFilename = actualComposePath ? basename(actualComposePath) : 'compose.yaml';
+		if (!stackFiles[composeFilename]) {
+			stackFiles[composeFilename] = compose;
+			console.log(`${logPrefix} Added ${composeFilename} to stackFiles for Hawser (${compose.length} chars)`);
+		}
+		if (actualEnvPath && existsSync(actualEnvPath) && !stackFiles['.env']) {
+			try {
+				const envContent = await Bun.file(actualEnvPath).text();
+				stackFiles['.env'] = envContent;
+				console.log(`${logPrefix} Added .env to stackFiles for Hawser (${envContent.length} chars)`);
+			} catch (err) {
+				console.warn(`${logPrefix} Failed to read .env file at ${actualEnvPath}:`, err);
 			}
 		}
 

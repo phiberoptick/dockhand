@@ -36,6 +36,7 @@ interface DockerClientConfig {
 	ca?: string;
 	cert?: string;
 	key?: string;
+	skipVerify?: boolean;
 	hawserToken?: string;
 	environmentId?: number;
 }
@@ -62,6 +63,7 @@ async function getDockerConfig(envId?: number | null): Promise<DockerClientConfi
 		ca: env.tlsCa || undefined,
 		cert: env.tlsCert || undefined,
 		key: env.tlsKey || undefined,
+		skipVerify: env.tlsSkipVerify || undefined,
 		hawserToken: env.connectionType === 'hawser-standard' ? env.hawserToken || undefined : undefined
 	};
 }
@@ -288,14 +290,15 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 			const fetchOpts: any = { headers: inspectHeaders };
 			if (config.type === 'https') {
 				fetchOpts.tls = {
-					sessionTimeout: 0, // Disable TLS session caching for mTLS
+					sessionTimeout: 0,
 					servername: config.host,
-					rejectUnauthorized: true
+					rejectUnauthorized: !config.skipVerify
 				};
 				if (config.ca) fetchOpts.tls.ca = [config.ca];
 				if (config.cert) fetchOpts.tls.cert = [config.cert];
 				if (config.key) fetchOpts.tls.key = config.key;
 				fetchOpts.keepalive = false;
+				if (process.env.DEBUG_TLS) fetchOpts.verbose = true;
 			}
 			inspectResponse = await fetch(inspectUrl, fetchOpts);
 		}
@@ -355,14 +358,15 @@ export const GET: RequestHandler = async ({ params, url, cookies }) => {
 					};
 					if (config.type === 'https') {
 						fetchOpts.tls = {
-							sessionTimeout: 0, // Disable TLS session caching for mTLS
+							sessionTimeout: 0,
 							servername: config.host,
-							rejectUnauthorized: true
+							rejectUnauthorized: !config.skipVerify
 						};
 						if (config.ca) fetchOpts.tls.ca = [config.ca];
 						if (config.cert) fetchOpts.tls.cert = [config.cert];
 						if (config.key) fetchOpts.tls.key = config.key;
 						fetchOpts.keepalive = false;
+						if (process.env.DEBUG_TLS) fetchOpts.verbose = true;
 					}
 					response = await fetch(logsUrl, fetchOpts);
 				}

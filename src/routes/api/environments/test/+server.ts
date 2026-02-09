@@ -14,6 +14,39 @@ interface TestConnectionRequest {
 	hawserToken?: string;
 }
 
+function cleanPem(pem: string): string {
+	return pem
+		.split('\n')
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.join('\n');
+}
+
+function buildTlsOptions(config: TestConnectionRequest): Record<string, any> | undefined {
+	const protocol = config.protocol || 'http';
+	if (protocol !== 'https') return undefined;
+
+	const tls: Record<string, any> = {
+		sessionTimeout: 0,
+		servername: config.host
+	};
+	if (config.tlsSkipVerify) {
+		tls.rejectUnauthorized = false;
+	} else {
+		tls.rejectUnauthorized = true;
+		if (config.tlsCa) {
+			tls.ca = [cleanPem(config.tlsCa)];
+		}
+	}
+	if (config.tlsCert) {
+		tls.cert = [cleanPem(config.tlsCert)];
+	}
+	if (config.tlsKey) {
+		tls.key = cleanPem(config.tlsKey);
+	}
+	return tls;
+}
+
 /**
  * Test Docker connection with provided configuration (without saving to database)
  */
@@ -55,78 +88,23 @@ export const POST: RequestHandler = async ({ request }) => {
 				'Content-Type': 'application/json'
 			};
 
-			// Add Hawser token if present
 			if (config.connectionType === 'hawser-standard' && config.hawserToken) {
 				headers['X-Hawser-Token'] = config.hawserToken;
 			}
 
-			// For HTTPS with custom CA, client certs, or skip verification, use subprocess to avoid Vite dev server TLS issues
-			if (protocol === 'https' && (config.tlsCa || config.tlsCert || config.tlsSkipVerify)) {
-				// Clean PEM content (remove extra whitespace)
-				const cleanPem = (pem: string) => pem
-					.split('\n')
-					.map((line) => line.trim())
-					.filter((line) => line.length > 0)
-					.join('\n');
+			const fetchOptions: any = {
+				headers,
+				signal: AbortSignal.timeout(10000),
+				keepalive: false
+			};
 
-				// Pass config as base64-encoded JSON to avoid escaping issues
-				const tlsConfig = {
-					url: `https://${host}:${port}/info`,
-					headers,
-					tlsSkipVerify: config.tlsSkipVerify || false,
-					ca: config.tlsCa && !config.tlsSkipVerify ? cleanPem(config.tlsCa) : null,
-					cert: config.tlsCert ? cleanPem(config.tlsCert) : null,
-					key: config.tlsKey ? cleanPem(config.tlsKey) : null,
-					host
-				};
-				const configBase64 = Buffer.from(JSON.stringify(tlsConfig)).toString('base64');
-
-				// Inline script with config embedded (bun -e doesn't pass argv correctly)
-				const scriptContent = `
-const config = JSON.parse(Buffer.from('${configBase64}', 'base64').toString());
-try {
-  const tls = {
-    sessionTimeout: 0,
-    servername: config.host,
-    rejectUnauthorized: !config.tlsSkipVerify
-  };
-  if (config.ca) tls.ca = [config.ca];
-  if (config.cert) tls.cert = [config.cert];
-  if (config.key) tls.key = config.key;
-  const response = await fetch(config.url, {
-    headers: config.headers,
-    tls,
-    keepalive: false
-  });
-  const body = await response.text();
-  console.log(JSON.stringify({ status: response.status, body }));
-} catch (e) {
-  console.log(JSON.stringify({ error: e.message }));
-}
-`;
-				const proc = Bun.spawn(['bun', '-e', scriptContent], { stdout: 'pipe', stderr: 'pipe' });
-				const output = await new Response(proc.stdout).text();
-				const stderr = await new Response(proc.stderr).text();
-
-				if (!output.trim()) {
-					throw new Error(stderr || 'Empty response from TLS test subprocess');
-				}
-				const result = JSON.parse(output.trim());
-
-				if (result.error) {
-					throw new Error(result.error);
-				}
-
-				response = new Response(result.body, {
-					status: result.status,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			} else {
-				response = await fetch(url, {
-					headers,
-					signal: AbortSignal.timeout(10000)
-				});
+			const tls = buildTlsOptions(config);
+			if (tls) {
+				fetchOptions.tls = tls;
+				if (process.env.DEBUG_TLS) fetchOptions.verbose = true;
 			}
+
+			response = await fetch(url, fetchOptions);
 		}
 
 		if (!response.ok) {
@@ -141,17 +119,25 @@ try {
 		if (config.connectionType === 'hawser-standard' && config.host) {
 			try {
 				const protocol = config.protocol || 'http';
-				const headers: Record<string, string> = {};
+				const hawserHeaders: Record<string, string> = {};
 				if (config.hawserToken) {
-					headers['X-Hawser-Token'] = config.hawserToken;
+					hawserHeaders['X-Hawser-Token'] = config.hawserToken;
 				}
-				const hawserResp = await fetch(
-					`${protocol}://${config.host}:${config.port || 2375}/_hawser/info`,
-					{
-						headers,
-						signal: AbortSignal.timeout(5000)
-					}
-				);
+				const hawserUrl = `${protocol}://${config.host}:${config.port || 2375}/_hawser/info`;
+
+				const fetchOptions: any = {
+					headers: hawserHeaders,
+					signal: AbortSignal.timeout(5000),
+					keepalive: false
+				};
+
+				const tls = buildTlsOptions(config);
+				if (tls) {
+					fetchOptions.tls = tls;
+					if (process.env.DEBUG_TLS) fetchOptions.verbose = true;
+				}
+
+				const hawserResp = await fetch(hawserUrl, fetchOptions);
 				if (hawserResp.ok) {
 					hawserInfo = await hawserResp.json();
 				}
