@@ -15,7 +15,8 @@
       { "type": "fix", "text": "Add Bearer token auth support for ntfy notifications" },
       { "type": "fix", "text": "Fix git SSH failing with 'No user exists for uid' with arbitrary UIDs" },
       { "type": "fix", "text": "Fix command palette flooding API requests on open" },
-      { "type": "fix", "text": "Normalize stack names when adopting to prevent uppercase rejection" }
+      { "type": "fix", "text": "Normalize stack names when adopting to prevent uppercase rejection" },
+      { "type": "fix", "text": "Fix container update failing for shared network modes (container:<name>, host, none)" }
     ],
     "imageTag": "fnsys/dockhand:v1.0.18"
   },
