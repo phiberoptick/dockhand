@@ -247,6 +247,12 @@ async function checkEnvDiskSpace(env: { id: number; name: string; collectMetrics
 			return;
 		}
 
+		// Check if disk warnings are enabled for this environment
+		const diskWarningEnabled = (await getEnvSetting('disk_warning_enabled', env.id)) ?? true;
+		if (!diskWarningEnabled) {
+			return;
+		}
+
 		// Check if we're in cooldown for this environment
 		const lastWarningTime = lastDiskWarning.get(env.id);
 		if (lastWarningTime && Date.now() - lastWarningTime < DISK_WARNING_COOLDOWN) {
@@ -292,41 +298,48 @@ async function checkEnvDiskSpace(env: { id: number; name: string; collectMetrics
 			}
 		}
 
-		// If we found total disk space, calculate percentage
-		if (dataSpaceTotal > 0) {
-			diskPercentUsed = (totalUsed / dataSpaceTotal) * 100;
-		} else {
-			// Fallback: just report absolute usage if we can't determine percentage
-			const GB = 1024 * 1024 * 1024;
-			if (totalUsed > 50 * GB) {
+		// Determine warning mode
+		const diskWarningMode = (await getEnvSetting('disk_warning_mode', env.id)) ?? 'percentage';
+		const GB = 1024 * 1024 * 1024;
+
+		if (diskWarningMode === 'absolute') {
+			// Absolute mode: warn when usage exceeds GB threshold
+			const thresholdGb = (await getEnvSetting('disk_warning_threshold_gb', env.id)) ?? 50;
+			if (totalUsed > thresholdGb * GB) {
 				send({
 					type: 'disk_warning',
 					envId: env.id,
 					envName: env.name,
-					message: `Environment "${env.name}" is using ${formatSize(totalUsed)} of Docker disk space`
+					message: `Environment "${env.name}" is using ${formatSize(totalUsed)} of Docker disk space (threshold: ${thresholdGb} GB)`
 				});
 				lastDiskWarning.set(env.id, Date.now());
 			}
-			return;
-		}
+		} else {
+			// Percentage mode: need total disk space
+			if (dataSpaceTotal > 0) {
+				diskPercentUsed = (totalUsed / dataSpaceTotal) * 100;
+			} else {
+				// Can't determine percentage without total space — skip
+				return;
+			}
 
-		// Check against threshold
-		const threshold =
-			(await getEnvSetting('disk_warning_threshold', env.id)) || DEFAULT_DISK_THRESHOLD;
-		if (diskPercentUsed >= threshold) {
-			console.log(
-				`[MetricsSubprocess] Docker disk usage for ${env.name}: ${diskPercentUsed.toFixed(1)}% (threshold: ${threshold}%)`
-			);
+			const threshold =
+				(await getEnvSetting('disk_warning_threshold', env.id)) || DEFAULT_DISK_THRESHOLD;
+			if (diskPercentUsed >= threshold) {
+				console.log(
+					`[MetricsSubprocess] Docker disk usage for ${env.name}: ${diskPercentUsed.toFixed(1)}% (threshold: ${threshold}%)`
+				);
 
-			send({
-				type: 'disk_warning',
-				envId: env.id,
-				envName: env.name,
-				message: `Environment "${env.name}" Docker disk usage is at ${diskPercentUsed.toFixed(1)}% (${formatSize(totalUsed)} used)`,
-				diskPercent: diskPercentUsed
-			});
+				send({
+					type: 'disk_warning',
+					envId: env.id,
+					envName: env.name,
+					message: `Environment "${env.name}" Docker disk usage is at ${diskPercentUsed.toFixed(1)}% (${formatSize(totalUsed)} used)`,
+					diskPercent: diskPercentUsed
+				});
 
-			lastDiskWarning.set(env.id, Date.now());
+				lastDiskWarning.set(env.id, Date.now());
+			}
 		}
 	} catch (error) {
 		// Skip this environment if it fails

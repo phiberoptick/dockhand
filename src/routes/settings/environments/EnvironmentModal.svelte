@@ -262,6 +262,10 @@
 	let formCollectActivity = $state(true);
 	let formCollectMetrics = $state(true);
 	let formHighlightChanges = $state(true);
+	let formDiskWarningEnabled = $state(true);
+	let formDiskWarningMode = $state<'percentage' | 'absolute'>('percentage');
+	let formDiskWarningThreshold = $state(80);
+	let formDiskWarningThresholdGb = $state(50);
 	let formConnectionType = $state<ConnectionType>('socket');
 	let formHawserToken = $state('');
 	let formLabels = $state<string[]>([]);
@@ -445,6 +449,7 @@
 			loadUpdateCheckSettings(environment.id);
 			loadImagePruneSettings(environment.id);
 			loadTimezone(environment.id);
+			loadDiskWarningSettings(environment.id);
 			// Load Hawser token if edge mode
 			if (formConnectionType === 'hawser-edge') {
 				loadHawserToken(environment.id);
@@ -463,6 +468,10 @@
 			formCollectActivity = true;
 			formCollectMetrics = true;
 			formHighlightChanges = true;
+			formDiskWarningEnabled = true;
+			formDiskWarningMode = 'percentage';
+			formDiskWarningThreshold = 80;
+			formDiskWarningThresholdGb = 50;
 			formConnectionType = 'socket';
 			formHawserToken = '';
 			formLabels = [];
@@ -701,6 +710,7 @@
 				// Save timezone if not default
 				if (newEnv?.id) {
 					await saveTimezone(newEnv.id);
+					await saveDiskWarningSettings(newEnv.id);
 				}
 				onSaved();
 				onClose();
@@ -774,6 +784,7 @@
 				await saveUpdateCheckSettings(environment.id);
 				await saveImagePruneSettings(environment.id);
 				await saveTimezone(environment.id);
+				await saveDiskWarningSettings(environment.id);
 				toast.success(`Updated environment: ${formName}`);
 				onSaved();
 				onClose();
@@ -785,6 +796,39 @@
 			formError = 'Failed to update environment';
 		} finally {
 			formSaving = false;
+		}
+	}
+
+	// === Disk Warning Functions ===
+	async function loadDiskWarningSettings(envId: number) {
+		try {
+			const response = await fetch(`/api/environments/${envId}/disk-warning`);
+			if (response.ok) {
+				const data = await response.json();
+				formDiskWarningEnabled = data.enabled ?? true;
+				formDiskWarningMode = data.mode ?? 'percentage';
+				formDiskWarningThreshold = data.threshold ?? 80;
+				formDiskWarningThresholdGb = data.thresholdGb ?? 50;
+			}
+		} catch (error) {
+			console.error('Failed to load disk warning settings:', error);
+		}
+	}
+
+	async function saveDiskWarningSettings(envId: number) {
+		try {
+			await fetch(`/api/environments/${envId}/disk-warning`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					enabled: formDiskWarningEnabled,
+					mode: formDiskWarningMode,
+					threshold: formDiskWarningThreshold,
+					thresholdGb: formDiskWarningThresholdGb
+				})
+			});
+		} catch (error) {
+			console.error('Failed to save disk warning settings:', error);
 		}
 	}
 
@@ -2063,6 +2107,10 @@
 						bind:collectActivity={formCollectActivity}
 						bind:collectMetrics={formCollectMetrics}
 						bind:highlightChanges={formHighlightChanges}
+						bind:diskWarningEnabled={formDiskWarningEnabled}
+						bind:diskWarningMode={formDiskWarningMode}
+						bind:diskWarningThreshold={formDiskWarningThreshold}
+						bind:diskWarningThresholdGb={formDiskWarningThresholdGb}
 					/>
 				</Tabs.Content>
 
