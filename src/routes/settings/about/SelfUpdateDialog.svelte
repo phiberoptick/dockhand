@@ -537,7 +537,7 @@
 						<div class="bg-muted/50 px-3 py-2 border-b">
 							<p class="text-sm font-medium">What's new</p>
 						</div>
-						<div class="p-3 space-y-3 max-h-48 overflow-y-auto">
+						<div class="p-3 space-y-3 overflow-y-auto">
 							{#each releaseNotes as entry}
 								<div class="space-y-1.5">
 									<div class="flex items-center gap-2">
