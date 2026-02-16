@@ -1760,17 +1760,16 @@
 										{#if container.systemContainer === 'dockhand'}
 											{#if hasUpdate}
 												<div class="space-y-2">
-													<p class="font-medium text-sm flex items-center gap-1.5">
+													<p class="font-medium text-sm flex items-center gap-1.5 whitespace-nowrap">
 														<CircleArrowUp class="w-4 h-4 text-amber-500" />
 														Update available
 													</p>
-													<p class="text-muted-foreground text-xs">Update Dockhand from the About page:</p>
 													<a
 														href="/settings?tab=about"
-														class="text-primary hover:underline text-xs flex items-center gap-1"
+														class="text-primary hover:underline text-xs flex items-center gap-1 whitespace-nowrap"
 														onclick={(e) => e.stopPropagation()}
 													>
-														Settings &gt; About &gt; Update now
+														Settings &gt; About
 													</a>
 												</div>
 											{:else}

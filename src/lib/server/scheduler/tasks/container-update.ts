@@ -569,7 +569,7 @@ export async function runContainerUpdate(
 		// =============================================================================
 
 		log(`Recreating container with full config passthrough...`);
-		const success = await recreateContainer(containerName, envId, log);
+		const success = await recreateContainer(containerName, envId, log, imageNameFromConfig);
 
 		if (success) {
 			await updateAutoUpdateLastUpdated(containerName, envId);
@@ -626,7 +626,8 @@ export async function runContainerUpdate(
 export async function recreateContainer(
 	containerName: string,
 	envId?: number,
-	log?: (msg: string) => void
+	log?: (msg: string) => void,
+	imageNameOverride?: string
 ): Promise<boolean> {
 	try {
 		const containers = await listContainers(true, envId);
@@ -638,7 +639,7 @@ export async function recreateContainer(
 		}
 
 		const inspectData = await inspectContainer(container.id, envId) as any;
-		const imageName = inspectData.Config?.Image;
+		const imageName = imageNameOverride || inspectData.Config?.Image;
 
 		log?.(`Recreating container: ${containerName} (image: ${imageName})`);
 

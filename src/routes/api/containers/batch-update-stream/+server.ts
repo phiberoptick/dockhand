@@ -464,7 +464,7 @@ export const POST: RequestHandler = async (event) => {
 						message: `Recreating ${containerName}...`
 					});
 
-					updateSuccess = await recreateContainer(containerName, envIdNum, logProgress);
+					updateSuccess = await recreateContainer(containerName, envIdNum, logProgress, imageName);
 					if (updateSuccess) {
 						const updatedContainers = await listContainers(true, envIdNum);
 						const updatedContainer = updatedContainers.find(c => c.name === containerName);

@@ -1404,6 +1404,17 @@ export async function recreateContainerFromInspect(
 	const oldContainerId = inspectData.Id;
 	const wasRunning = inspectData.State?.Running;
 
+	// Detect shared/special network modes where network manipulation must be skipped
+	const networkMode = hostConfig.NetworkMode || '';
+	const isSharedNetwork = networkMode.startsWith('container:') ||
+		networkMode.startsWith('service:') ||
+		networkMode === 'host' ||
+		networkMode === 'none';
+
+	if (isSharedNetwork) {
+		log?.(`Shared network mode detected: ${networkMode} — skipping network manipulation`);
+	}
+
 	// 1. Stop the container
 	if (wasRunning) {
 		log?.('Stopping container...');
@@ -1419,24 +1430,27 @@ export async function recreateContainerFromInspect(
 	).then(r => { if (!r.ok) throw new Error('Failed to rename old container'); });
 
 	// 3. Disconnect all networks from old container (frees static IPs)
+	// Skip for shared network modes (container:X, host, none) — Docker manages these
 	// Capture the first network for use during container creation
 	let initialNetworkName: string | null = null;
 	let initialNetworkConfig: any = null;
 
-	for (const [netName, netConfig] of Object.entries(networks)) {
-		const networkId = (netConfig as any).NetworkID;
-		if (networkId) {
-			try {
-				await disconnectContainerFromNetwork(networkId, oldContainerId, true, envId);
-			} catch {
-				// Best effort - network may already be disconnected
+	if (!isSharedNetwork) {
+		for (const [netName, netConfig] of Object.entries(networks)) {
+			const networkId = (netConfig as any).NetworkID;
+			if (networkId) {
+				try {
+					await disconnectContainerFromNetwork(networkId, oldContainerId, true, envId);
+				} catch {
+					// Best effort - network may already be disconnected
+				}
 			}
-		}
 
-		// Use first network for creation
-		if (!initialNetworkName) {
-			initialNetworkName = netName;
-			initialNetworkConfig = netConfig;
+			// Use first network for creation
+			if (!initialNetworkName) {
+				initialNetworkName = netName;
+				initialNetworkConfig = netConfig;
+			}
 		}
 	}
 
@@ -1452,10 +1466,12 @@ export async function recreateContainerFromInspect(
 			).catch(() => {});
 
 			// Reconnect networks using full EndpointSettings from inspect
-			for (const [, netConfig] of Object.entries(networks)) {
-				const nc = netConfig as any;
-				if (nc.NetworkID) {
-					await connectContainerToNetworkRaw(nc.NetworkID, oldContainerId, nc, envId).catch(() => {});
+			if (!isSharedNetwork) {
+				for (const [, netConfig] of Object.entries(networks)) {
+					const nc = netConfig as any;
+					if (nc.NetworkID) {
+						await connectContainerToNetworkRaw(nc.NetworkID, oldContainerId, nc, envId).catch(() => {});
+					}
 				}
 			}
 
@@ -1474,6 +1490,48 @@ export async function recreateContainerFromInspect(
 		Image: newImage,
 		HostConfig: hostConfig
 	};
+
+	// container:<name> mode shares the network namespace — Docker rejects
+	// networking-related fields on the dependent container since they're
+	// owned by the network provider container
+	if (networkMode.startsWith('container:')) {
+		delete createConfig.Hostname;
+		delete createConfig.Domainname;
+		delete createConfig.ExposedPorts;
+		delete createConfig.MacAddress;
+		// HostConfig fields that conflict with container network mode
+		if (createConfig.HostConfig) {
+			delete createConfig.HostConfig.PortBindings;
+			delete createConfig.HostConfig.PublishAllPorts;
+			delete createConfig.HostConfig.DNS;
+			delete createConfig.HostConfig.DNSOptions;
+			delete createConfig.HostConfig.DNSSearch;
+			delete createConfig.HostConfig.ExtraHosts;
+			delete createConfig.HostConfig.Links;
+		}
+
+		// Resolve container ID references to names for resilience.
+		// Docker stores NetworkMode with the full container SHA ID, but if that container
+		// gets recreated (new ID), the reference goes stale. Using the container name
+		// instead makes the reference survive recreation.
+		const containerRef = networkMode.slice('container:'.length);
+		const isHexId = /^[0-9a-f]{12,64}$/.test(containerRef);
+		if (isHexId) {
+			try {
+				const refInspect = await inspectContainer(containerRef, envId);
+				// Container exists — switch from ID to name for resilience
+				const refName = (refInspect as any).Name?.replace(/^\//, '');
+				if (refName) {
+					createConfig.HostConfig.NetworkMode = `container:${refName}`;
+					log?.(`Resolved network container ID to name: ${refName}`);
+				}
+			} catch {
+				// Container ID is stale — the referenced container was likely recreated
+				// with a new ID. We can't resolve without knowing the original name.
+				log?.(`WARNING: Network reference container:${containerRef.slice(0, 12)}... is stale (container not found). The container may fail to start if the referenced container was recreated.`);
+			}
+		}
+	}
 
 	// Preserve anonymous volumes from Mounts not in HostConfig.Binds
 	const existingBinds = new Set((hostConfig.Binds || []).map((b: string) => {
@@ -1498,8 +1556,9 @@ export async function recreateContainerFromInspect(
 
 	// Docker can only connect to one network at creation. Pass the first network
 	// from the old container's settings to avoid getting a random bridge IP.
+	// Skip for shared network modes — EndpointsConfig conflicts with container:/host/none modes.
 	// Clear MacAddress for Docker API < 1.44 compatibility.
-	if (initialNetworkName && initialNetworkConfig) {
+	if (!isSharedNetwork && initialNetworkName && initialNetworkConfig) {
 		const endpointConfig = { ...initialNetworkConfig };
 		delete endpointConfig.MacAddress;
 		createConfig.NetworkingConfig = {
@@ -1529,15 +1588,18 @@ export async function recreateContainerFromInspect(
 	}
 
 	// 6. Connect additional networks using full EndpointSettings from inspect
-	for (const [netName, netConfig] of Object.entries(networks)) {
-		if (netName === initialNetworkName) continue; // Already connected at creation
+	// Skip for shared network modes — Docker manages networking via the parent container
+	if (!isSharedNetwork) {
+		for (const [netName, netConfig] of Object.entries(networks)) {
+			if (netName === initialNetworkName) continue; // Already connected at creation
 
-		const nc = netConfig as any;
-		if (nc.NetworkID) {
-			try {
-				await connectContainerToNetworkRaw(nc.NetworkID, newContainerId, nc, envId);
-			} catch (netError: any) {
-				log?.(`Warning: Failed to connect to network "${netName}": ${netError.message}`);
+			const nc = netConfig as any;
+			if (nc.NetworkID) {
+				try {
+					await connectContainerToNetworkRaw(nc.NetworkID, newContainerId, nc, envId);
+				} catch (netError: any) {
+					log?.(`Warning: Failed to connect to network "${netName}": ${netError.message}`);
+				}
 			}
 		}
 	}
