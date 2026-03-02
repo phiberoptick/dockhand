@@ -130,6 +130,12 @@ function buildCreateConfig(inspectData: any, newImage: string): any {
 	// Clear MacAddress for Docker API < 1.44 compatibility
 	delete createConfig.MacAddress;
 
+	// Clear Entrypoint and Cmd so the new image's defaults are used.
+	// This prevents carrying over a stale entrypoint from a previous runtime
+	// (e.g. Bun's docker-entrypoint.sh → Node.js docker-entrypoint-node.sh).
+	delete createConfig.Entrypoint;
+	delete createConfig.Cmd;
+
 	// Clear Hostname so Docker assigns the new container's own ID
 	// Otherwise the old container's hostname is inherited, breaking self-identification
 	delete createConfig.Hostname;

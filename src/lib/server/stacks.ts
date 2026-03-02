@@ -3,6 +3,7 @@
  *
  * Provides compose-first stack operations for internal, git, and external stacks.
  * All lifecycle operations use docker compose commands.
+ * v1.0.20
  */
 
 import { existsSync, mkdirSync, rmSync, readdirSync, cpSync, statSync, unlinkSync, renameSync, readFileSync, writeFileSync } from 'node:fs';
