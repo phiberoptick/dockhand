@@ -6,23 +6,26 @@ export interface PortMapping {
 }
 
 interface PortInfo {
-	PublicPort: number;
-	PrivatePort: number;
+	PublicPort?: number;
+	PrivatePort?: number;
+	publicPort?: number;
+	privatePort?: number;
 }
 
 /**
  * Format Docker port mappings, collapsing consecutive ranges.
+ * Accepts both Docker API format (PublicPort/PrivatePort) and camelCase (publicPort/privatePort).
  * e.g. 8080:8080, 8081:8081, 8082:8082 → 8080-8082:8080-8082
  */
 export function formatPorts(ports: PortInfo[] | undefined | null): PortMapping[] {
 	if (!ports || ports.length === 0) return [];
 	const seen = new Set<string>();
 	const individual = ports
-		.filter(p => p.PublicPort)
+		.filter(p => (p.PublicPort || p.publicPort))
 		.map(p => ({
-			publicPort: p.PublicPort,
-			privatePort: p.PrivatePort,
-			display: `${p.PublicPort}:${p.PrivatePort}`
+			publicPort: p.PublicPort || p.publicPort!,
+			privatePort: p.PrivatePort || p.privatePort!,
+			display: `${p.PublicPort || p.publicPort}:${p.PrivatePort || p.privatePort}`
 		}))
 		.filter(p => {
 			const key = p.display;

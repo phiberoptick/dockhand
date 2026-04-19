@@ -15,6 +15,7 @@
 	import * as Popover from '$lib/components/ui/popover';
 	import MultiSelectFilter from '$lib/components/MultiSelectFilter.svelte';
 	import { Play, Square, Trash2, Plus, ArrowBigDown, Search, Pencil, ExternalLink, GitBranch, RefreshCw, Loader2, FileCode, FileText, FileOutput, Box, RotateCcw, ScrollText, Terminal, Eye, Network, HardDrive, Heart, HeartPulse, HeartOff, ChevronsUpDown, ChevronsDownUp, Rocket, AlertTriangle, X, Layers, Pause, CircleDashed, Skull, FolderOpen, Variable, Clock, RotateCw, Import, Ship, Cable, LayoutPanelLeft, Rows3, GripVertical } from 'lucide-svelte';
+	import { formatPorts } from '$lib/utils/port-format';
 	import ConfirmPopover from '$lib/components/ConfirmPopover.svelte';
 	import BatchOperationModal from '$lib/components/BatchOperationModal.svelte';
 	import type { ComposeStackInfo, ContainerStats } from '$lib/types';
@@ -2014,11 +2015,11 @@
 										{/key}
 									{/if}
 									<div class="flex flex-wrap gap-1.5 mb-2 text-2xs">
-										<!-- Clickable ports (dedupe by publicPort for IPv4/IPv6) -->
+										<!-- Clickable ports with range collapsing -->
 										{#if container.ports.length > 0}
-											{@const uniquePorts = container.ports.filter((p, i, arr) => p.publicPort && arr.findIndex(x => x.publicPort === p.publicPort) === i)}
-											{#each uniquePorts as port}
-												{@const url = getPortUrl(port.publicPort)}
+											{@const mappedPorts = formatPorts(container.ports)}
+											{#each mappedPorts as port}
+												{@const url = !port.isRange ? getPortUrl(port.publicPort) : null}
 												{#if url}
 													<a
 														href={url}
@@ -2028,12 +2029,12 @@
 														class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 hover:bg-blue-200 dark:hover:bg-blue-800 transition-colors"
 														title="Open {url} in new tab"
 													>
-														<code>:{port.publicPort}</code>
+														<code>{port.display}</code>
 														<ExternalLink class="w-2.5 h-2.5" />
 													</a>
 												{:else}
 													<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-														<code>:{port.publicPort}</code>
+														<code>{port.display}</code>
 													</span>
 												{/if}
 											{/each}
